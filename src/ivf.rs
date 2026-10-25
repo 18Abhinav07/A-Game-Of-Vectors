@@ -554,13 +554,9 @@ impl Index {
                         }
                     }
                     Some(post) => {
-                        let tf = std::time::Instant::now();
+                        // Scan each record as its read completes; `fetch` is time spent blocked.
                         let clusters: Vec<u32> = probe.iter().map(|x| x.1).collect();
-                        let recs = post.fetch(&clusters);
-                        t.fetch += tf.elapsed().as_nanos() as u64;
-                        for (&(cent, _), r) in probe.iter().zip(&recs) {
-                            scan(cent, r.blocks(), r.factors(), r.ids());
-                        }
+                        t.fetch += post.fetch_each(&clusters, |i, r| scan(probe[i].0, r.blocks(), r.factors(), r.ids()));
                     }
                 }
                 cand.into_sorted().into_iter().map(|(est, k)| (est, meta[k as usize].0, meta[k as usize].1)).collect()

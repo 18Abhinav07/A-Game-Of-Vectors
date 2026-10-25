@@ -190,6 +190,12 @@ read. RAM holds only the centroids, the record offsets and an optional hot-clust
   (preliminary): p50 13 ms, of which 8 ms is fetch and 4.4 ms is the 300-row rerank, at 85 QPS.
   Query-aware probing (D12) cuts the fetch with the probe count: p50 7.4 ms at 21.6 MB per query.
   Idle-machine numbers come with M2.
+- **Scan while reading.** `fetch_each` submits every miss, scans the cache hits, then scans
+  each record as its read completes, so the scan hides inside the I/O wait instead of following it.
+  A/B against the batch version, two rounds each, cold, 64:500:ssd300: p50 12.9/13.3 → 12.1/11.8 ms,
+  time blocked on reads 8.1/8.8 → 7.1/6.8 ms, and peak RSS 494/423 → 287/303 MB, because each
+  record is dropped after its scan instead of all 64 being held at once. Recall is unchanged
+  (0.912). With margin probing the difference is within noise (`results/m1-stream-ab.txt`).
 
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.

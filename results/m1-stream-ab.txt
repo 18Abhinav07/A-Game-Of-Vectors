@@ -1,0 +1,25 @@
+== BASE/release/search 64:500:ssd300
+18380565 rows, 4096 clusters, 2677 queries
+ivf 64 probes, 500 cand, rerank ssd300 | ssd cache 0 MB | p50 12.88 p99 18.19 ms | fetch 8.07 rerank 4.04 route 0.03 scan 9.09 | 73 QPS | hit 0.00/0.00 | 27.4 MB/q | rss 494 MB
+== BASE/release/search 256:500:ssd300:p0.12
+18380565 rows, 4096 clusters, 2677 queries
+ivf 256 probes, 500 cand, rerank ssd300, probe margin 0.12 | ssd cache 0 MB | p50 7.95 p99 53.27 ms | fetch 6.66 rerank 4.66 route 0.05 scan 7.74 | 82 QPS | hit 0.00/0.00 | 21.6 MB/q | rss 532 MB
+== stream/release/search 64:500:ssd300
+18380565 rows, 4096 clusters, 2677 queries
+ivf 64 probes, 500 cand, rerank ssd300 | ssd cache 0 MB | p50 12.08 p99 26.07 ms | fetch 7.11 rerank 4.28 route 0.04 scan 8.42 | 85 QPS | hit 0.00/0.00 | 27.4 MB/q | rss 287 MB
+== stream/release/search 256:500:ssd300:p0.12
+18380565 rows, 4096 clusters, 2677 queries
+ivf 256 probes, 500 cand, rerank ssd300, probe margin 0.12 | ssd cache 0 MB | p50 8.14 p99 53.51 ms | fetch 6.32 rerank 5.46 route 0.04 scan 7.37 | 98 QPS | hit 0.00/0.00 | 21.6 MB/q | rss 300 MB
+== BASE/release/search 64:500:ssd300
+18380565 rows, 4096 clusters, 2677 queries
+ivf 64 probes, 500 cand, rerank ssd300 | ssd cache 0 MB | p50 13.26 p99 30.88 ms | fetch 8.75 rerank 5.08 route 0.04 scan 9.82 | 57 QPS | hit 0.00/0.00 | 27.4 MB/q | rss 423 MB
+== BASE/release/search 256:500:ssd300:p0.12
+18380565 rows, 4096 clusters, 2677 queries
+ivf 256 probes, 500 cand, rerank ssd300, probe margin 0.12 | ssd cache 0 MB | p50 8.24 p99 54.69 ms | fetch 7.06 rerank 5.20 route 0.04 scan 7.89 | 94 QPS | hit 0.00/0.00 | 21.6 MB/q | rss 578 MB
+== stream/release/search 64:500:ssd300
+18380565 rows, 4096 clusters, 2677 queries
+ivf 64 probes, 500 cand, rerank ssd300 | ssd cache 0 MB | p50 11.80 p99 18.41 ms | fetch 6.78 rerank 4.11 route 0.04 scan 8.08 | 86 QPS | hit 0.00/0.00 | 27.4 MB/q | rss 303 MB
+== stream/release/search 256:500:ssd300:p0.12
+18380565 rows, 4096 clusters, 2677 queries
+ivf 256 probes, 500 cand, rerank ssd300, probe margin 0.12 | ssd cache 0 MB | p50 7.22 p99 51.28 ms | fetch 5.90 rerank 4.81 route 0.04 scan 6.93 | 101 QPS | hit 0.00/0.00 | 21.6 MB/q | rss 296 MB
+[exited with code 0]

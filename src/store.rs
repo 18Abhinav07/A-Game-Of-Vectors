@@ -148,17 +148,24 @@ impl IoPool {
     /// Runs every job on the pool and returns their results in order.
     pub fn run<T: Send + 'static>(&self, jobs: Vec<Box<dyn FnOnce() -> T + Send>>) -> Vec<T> {
         let n = jobs.len();
-        let (rtx, rrx) = std::sync::mpsc::channel();
-        for (i, job) in jobs.into_iter().enumerate() {
-            let rtx = rtx.clone();
-            self.tx.send(Box::new(move || drop(rtx.send((i, job()))))).expect("io pool is alive");
-        }
+        let rrx = self.stream(jobs);
         let mut out: Vec<Option<T>> = (0..n).map(|_| None).collect();
         for _ in 0..n {
             let (i, v) = rrx.recv().expect("io job panicked");
             out[i] = Some(v);
         }
         out.into_iter().map(|v| v.expect("every job reports")).collect()
+    }
+
+    /// Submits every job and returns `(job index, result)` in completion order, so the caller
+    /// can work on early results while later reads are still in flight.
+    pub fn stream<T: Send + 'static>(&self, jobs: Vec<Box<dyn FnOnce() -> T + Send>>) -> std::sync::mpsc::Receiver<(usize, T)> {
+        let (rtx, rrx) = std::sync::mpsc::channel();
+        for (i, job) in jobs.into_iter().enumerate() {
+            let rtx = rtx.clone();
+            self.tx.send(Box::new(move || drop(rtx.send((i, job()))))).expect("io pool is alive");
+        }
+        rrx
     }
 }
 
