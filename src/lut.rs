@@ -78,6 +78,17 @@ pub fn pack_block(codes: &[&[u8]], out: &mut [u8]) {
     }
 }
 
+/// The raw code of slot `k` in a packed block: the inverse of `pack_block`.
+pub fn unpack_slot(block: &[u8], k: usize, code: &mut [u8]) {
+    debug_assert!(k < BLOCK && block.len() == BLOCK_BYTES);
+    code.fill(0);
+    for g in 0..GROUPS {
+        let b = block[g * 16 + (k & 15)];
+        let nib = if k < 16 { b & 0x0F } else { b >> 4 };
+        code[g >> 1] |= nib << ((g & 1) * 4);
+    }
+}
+
 /// Scores every block in `blocks` (a multiple of BLOCK_BYTES), writing 32 scores per block.
 pub fn scan(lut: &Lut, blocks: &[u8], out: &mut [u16]) {
     debug_assert_eq!(blocks.len() % BLOCK_BYTES, 0);

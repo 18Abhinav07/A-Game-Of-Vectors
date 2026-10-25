@@ -278,6 +278,53 @@ protocols:
   files. Shards map the full files and touch only their own clusters' pages, so in SSD mode a
   shard's reads already cover only its records. (`results/m1-shard.jsonl`)
 
+### D17. Live updates: tombstones, delta lists, a write-ahead log, compaction
+The built index stays immutable; updates sit beside it and the query path reads both through a
+`View` (`src/live.rs`, `Index::search_view`).
+- **Deletes** set a bit in a tombstone bitset over row ids. The scan checks it at admission,
+  after the threshold test, so a dead slot costs a load only when it would otherwise have
+  entered the candidate buffer, and never occupies a place in it.
+- **Inserts** are encoded exactly as `ivf::build` encodes a row: the prefix is rebuilt from the
+  int8 row, assigned to its nearest centroid plus a SOAR secondary, RaBitQ-encoded against both
+  centroids, given a 2-bit tier code. The two slots are appended to per-cluster delta lists in
+  the base block layout, with the last partial block repacked on each insert, so the unchanged
+  LUT scan reads them right after the cluster's base list, in RAM and SSD mode alike. Delta rows
+  get row ids from `corpus.n` up, and their int8 rows, tier codes and prefix norms live in RAM;
+  every rerank path asks the view for a row before the corpus. The SSD rerank splits its reads:
+  corpus rows by `pread`, delta rows from RAM.
+- **External ids**: corpus rows keep their row ids as external ids, and a delta row carries the id
+  it was inserted under. Inserting a live id is an upsert that tombstones the old row; search
+  maps rows back to external ids.
+- **Durability**: every batch is written to a log (op, id, prefix norm, int8 row: 777 bytes per
+  insert, 5 per delete) and fsynced before it is applied. The log stores the int8 row, not the
+  float vector, because the build derives every code from the int8 row, so a replay rebuilds
+  the delta bit for bit. A torn final record is cut off on open.
+- **Compaction** writes a new index directory: per cluster, the live base slots (codes
+  recovered with `lut::unpack_slot`, the inverse of `pack_block`) followed by the live delta
+  slots, then SSD posting lists. Centroids, rotation and the corpus-indexed tier files are
+  symlinked; the delta rows become a row segment (`live.*`) that the reopened index serves
+  rows from. Compaction reads the live state through `&self`, so searches continue while it
+  runs; records replayed onto a compacted index are harmless because each is an upsert or a
+  delete.
+- **Result** (M1, delete a random 10% = 1,838,056 rows, reinsert all of them under their own
+  ids; R@10 against the exact top-10 of the rows live at each step): baseline 0.9192 / 0.9191 /
+  0.9120 for 64:500 full / tiered200 / ssd300. After the deletes, 0.9183 / 0.9182 / 0.9111; the
+  live truth now reaches further down the exact ranking, into clusters not always probed.
+  After reinsertion, and again after a restart from the log alone, and again after compaction,
+  0.9192 / 0.9191 / 0.9120: the delta path loses nothing. SSD mode gives 0.9120 at every step
+  too. Inserts run at 100k rows/s on 12 threads, fsync per 10k rows. The log for 1.84M rows is
+  1.44 GB and replays in 12 s; compaction takes 8 s plus the posting-list pack.
+- **Cost of an uncompacted delta**: with 10% of the corpus in delta lists and 10% dead slots in
+  the base, scanned slots rise 10% (622,762 → 685,851 per query) and p50 rises about 25% (1.67 →
+  2.08 ms for full rerank, Low Power Mode, relative only). Compaction restores both (622,762;
+  1.80 ms). So compaction is a latency task, not a correctness one, and can run on a
+  dead-slot or delta-size threshold.
+- Not built: splitting or re-centering clusters as the data drifts (SPFresh's LIRE). With a
+  fixed set of centroids, inserts far from all of them land in clusters that probe badly, and
+  recall would decay; the reinsert test cannot show this because its rows come from the
+  distribution the centroids were trained on. Concurrency is one writer at a time behind an
+  `RwLock`; there is no MVCC snapshot for long scans. (`results/m1-live.jsonl`)
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.

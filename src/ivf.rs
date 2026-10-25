@@ -459,6 +459,39 @@ pub struct Params {
     pub budget: Option<usize>,
 }
 
+/// What a query sees beyond the immutable base index (D17): rows to hide (tombstones) and a
+/// delta segment of rows inserted since the build. The default view is the base alone.
+#[derive(Clone, Copy, Default)]
+pub struct View<'a> {
+    /// Bitset over row ids; a set bit hides the row.
+    pub deleted: Option<&'a [u64]>,
+    pub delta: Option<&'a crate::live::Delta>,
+}
+
+#[inline]
+fn bit(set: &[u64], id: u32) -> bool {
+    set.get(id as usize >> 6).is_some_and(|w| w >> (id & 63) & 1 == 1)
+}
+
+impl View<'_> {
+    #[inline]
+    fn hidden(&self, id: u32) -> bool {
+        self.deleted.is_some_and(|d| bit(d, id))
+    }
+
+    /// The int8 row of `id`, from the delta's row store or the corpus.
+    #[inline]
+    fn row<'c>(&self, corpus: &'c Corpus, id: u32) -> &'c [i8]
+    where
+        Self: 'c,
+    {
+        match self.delta.and_then(|d| d.row(id)) {
+            Some(r) => r,
+            None => corpus.rerank_row(id),
+        }
+    }
+}
+
 /// Per-thread buffers so the query path does not allocate.
 pub struct Scratch {
     cent: Vec<f32>,
@@ -583,23 +616,32 @@ impl Index {
 
     /// `q768` and `q256` must be unit length. Returns (score, corpus row), best first.
     pub fn search(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
+        self.search_view(corpus, q768, q256, p, &View::default(), s, t)
+    }
+
+    /// `search` over the base plus a live view (tombstones, delta segment).
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_view(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], p: &Params, v: &View, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
         let t0 = std::time::Instant::now();
         let probe = self.route(q256, p, s);
         t.route += t0.elapsed().as_nanos() as u64;
-        self.search_probes(corpus, q768, q256, &probe, p, s, t)
+        let cand = self.candidates(q256, &probe, p, v, s, t);
+        self.rerank(corpus, q768, q256, cand, p, v, s, t)
     }
 
     /// Scans the given (centroid score, cluster) list and reranks: everything after routing.
     /// A shard (D16) runs this on the clusters it owns out of a coordinator's probe list.
     #[allow(clippy::too_many_arguments)]
     pub fn search_probes(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], probe: &[(f32, u32)], p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
-        let cand = self.candidates(q256, probe, p, s, t);
-        self.rerank(corpus, q768, q256, cand, p, s, t)
+        let cand = self.candidates(q256, probe, p, &View::default(), s, t);
+        self.rerank(corpus, q768, q256, cand, p, &View::default(), s, t)
     }
 
     /// The scan: the best `p.cand` slots of the probed clusters by code estimate, deduplicated by
     /// corpus row, as (estimate, row, error half-width), in row order.
-    pub fn candidates(&self, q256: &[f32], probe: &[(f32, u32)], p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32, f32)> {
+    /// Rows the view hides are skipped at admission; the view's delta lists are scanned after
+    /// each probed cluster's base list.
+    pub fn candidates(&self, q256: &[f32], probe: &[(f32, u32)], p: &Params, v: &View, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32, f32)> {
         t.probed += probe.len() as u64;
         let t1 = std::time::Instant::now();
 
@@ -621,7 +663,7 @@ impl Index {
                     t.scanned += scores.len() as u64;
                     for (j, (&sc, f)) in scores.iter().zip(factors.chunks_exact(2)).enumerate() {
                         let est = rq.estimate(cent, f[0], sc);
-                        if cand.threshold().is_some_and(|th| est <= th) || ids[j] == PAD {
+                        if cand.threshold().is_some_and(|th| est <= th) || ids[j] == PAD || v.hidden(ids[j]) {
                             continue;
                         }
                         cand.push(est, meta.len() as u32);
@@ -634,12 +676,20 @@ impl Index {
                         for &(cent, c) in probe {
                             let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
                             scan(cent, &blocks[b0 * BLOCK_BYTES..b1 * BLOCK_BYTES], &factors[b0 * BLOCK * 2..b1 * BLOCK * 2], &ids[b0 * BLOCK..b1 * BLOCK]);
+                            if let Some((b, f, i)) = v.delta.and_then(|d| d.list(c)) {
+                                scan(cent, b, f, i);
+                            }
                         }
                     }
                     Some(post) => {
                         // Scan each record as its read completes; `fetch` is time spent blocked.
                         let clusters: Vec<u32> = probe.iter().map(|x| x.1).collect();
-                        t.fetch += post.fetch_each(&clusters, |i, r| scan(probe[i].0, r.blocks(), r.factors(), r.ids()));
+                        t.fetch += post.fetch_each(&clusters, |i, r| {
+                            scan(probe[i].0, r.blocks(), r.factors(), r.ids());
+                            if let Some((b, f, ids)) = v.delta.and_then(|d| d.list(probe[i].1)) {
+                                scan(probe[i].0, b, f, ids);
+                            }
+                        });
                     }
                 }
                 cand.into_sorted().into_iter().map(|(est, k)| (est, meta[k as usize].0, meta[k as usize].1)).collect()
@@ -655,7 +705,7 @@ impl Index {
                     t.scanned += (nb * BLOCK) as u64;
                     let slot_ids = &ids[b0 * BLOCK..b1 * BLOCK];
                     for (&sc, &id) in s.scores.iter().zip(slot_ids) {
-                        if cand.threshold().is_some_and(|th| sc <= th) || id == PAD {
+                        if cand.threshold().is_some_and(|th| sc <= th) || id == PAD || v.hidden(id) {
                             continue;
                         }
                         cand.push(sc, id);
@@ -678,7 +728,7 @@ impl Index {
     /// Bound pruning, then the rerank of `p.rerank`, over candidates from `candidates` (or a
     /// coordinator's global cut of several shards' candidates). Returns the top `p.k`.
     #[allow(clippy::too_many_arguments)]
-    pub fn rerank(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], mut cand: Vec<(f32, u32, f32)>, p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
+    pub fn rerank(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], mut cand: Vec<(f32, u32, f32)>, p: &Params, v: &View, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
         let t2 = std::time::Instant::now();
         if let Some((m, w)) = p.prune {
             let tau = prune_threshold(&cand, m, w);
@@ -702,23 +752,16 @@ impl Index {
                 let inv = 1.0 / query_i8(&s.w, &mut s.wq);
                 for (i, &(_, id)) in cand.iter().enumerate() {
                     if let Some(&(_, ahead)) = cand.get(i + PREFETCH_ROWS) {
-                        prefetch(corpus.rerank_row(ahead));
+                        prefetch(v.row(corpus, ahead));
                     }
-                    out.push(dot_i8i8(&s.wq, corpus.rerank_row(id)) as f32 * inv, id);
+                    out.push(dot_i8i8(&s.wq, v.row(corpus, id)) as f32 * inv, id);
                 }
             }
             Rerank::Ssd(r) => {
                 let mut best = TopK::new(r);
                 cand.iter().for_each(|&(est, id)| best.push(est, id));
                 let ids: Vec<u32> = best.into_sorted().into_iter().map(|x| x.1).collect();
-                s.rows.resize(ids.len() * DIM, 0);
-                corpus.ssd.read_rows(&ids, &mut s.rows);
-                s.w.clear();
-                s.w.extend(q768.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
-                let inv = 1.0 / query_i8(&s.w, &mut s.wq);
-                for (row, &id) in s.rows.chunks_exact(DIM).zip(&ids) {
-                    out.push(dot_i8i8(&s.wq, row) as f32 * inv, id);
-                }
+                read_and_rerank(corpus, v, q768, &ids, s, &mut out);
             }
             Rerank::Tiered(r) if self.tier2.is_some() => {
                 let (t2, codes, norms) = self.tier2.as_ref().unwrap();
@@ -726,19 +769,15 @@ impl Index {
                 let tables = t2.tables(q256);
                 let mut pre = TopK::new(r);
                 for &(_, id) in &cand {
-                    let c = &codes[id as usize * tier2::BYTES..][..tier2::BYTES];
-                    pre.push(tier2::score(&tables, c, norms.as_slice()[id as usize]), id);
+                    let (c, n) = match v.delta.and_then(|d| d.tier2(id)) {
+                        Some(x) => x,
+                        None => (&codes[id as usize * tier2::BYTES..][..tier2::BYTES], norms.as_slice()[id as usize]),
+                    };
+                    pre.push(tier2::score(&tables, c, n), id);
                 }
                 let ids: Vec<u32> = pre.into_sorted().into_iter().map(|x| x.1).collect();
                 t.tier2 += t2_start(&mut t_mid);
-                s.rows.resize(ids.len() * DIM, 0);
-                corpus.ssd.read_rows(&ids, &mut s.rows);
-                s.w.clear();
-                s.w.extend(q768.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
-                let inv = 1.0 / query_i8(&s.w, &mut s.wq);
-                for (row, &id) in s.rows.chunks_exact(DIM).zip(&ids) {
-                    out.push(dot_i8i8(&s.wq, row) as f32 * inv, id);
-                }
+                read_and_rerank(corpus, v, q768, &ids, s, &mut out);
             }
             Rerank::Prefix | Rerank::Tiered(_) => {
                 s.w.clear();
@@ -750,10 +789,11 @@ impl Index {
                 });
                 for (i, &(_, id)) in cand.iter().enumerate() {
                     if let Some(&(_, ahead)) = cand.get(i + PREFETCH_ROWS) {
-                        prefetch(&corpus.rerank_row(ahead)[..PDIM]);
+                        prefetch(&v.row(corpus, ahead)[..PDIM]);
                     }
-                    let r = &corpus.rerank_row(id)[..PDIM];
-                    pre.push(dot_i8i8(&s.wq, r) as f32 * inv / corpus.norm256.as_slice()[id as usize], id);
+                    let r = &v.row(corpus, id)[..PDIM];
+                    let norm = v.delta.and_then(|d| d.norm256(id)).unwrap_or_else(|| corpus.norm256.as_slice()[id as usize]);
+                    pre.push(dot_i8i8(&s.wq, r) as f32 * inv / norm, id);
                 }
                 if p.rerank == Rerank::Prefix {
                     out = pre;
@@ -762,13 +802,29 @@ impl Index {
                     s.w.extend(q768.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
                     let inv = 1.0 / query_i8(&s.w, &mut s.wq);
                     for (_, id) in pre.into_sorted() {
-                        out.push(dot_i8i8(&s.wq, corpus.rerank_row(id)) as f32 * inv, id);
+                        out.push(dot_i8i8(&s.wq, v.row(corpus, id)) as f32 * inv, id);
                     }
                 }
             }
         }
         t.rerank += t2.elapsed().as_nanos() as u64;
         out.into_sorted()
+    }
+}
+
+/// Exact int8 scores of `ids`: corpus rows with parallel preads, delta rows from RAM.
+fn read_and_rerank(corpus: &Corpus, v: &View, q768: &[f32], ids: &[u32], s: &mut Scratch, out: &mut TopK<f32>) {
+    let (base, extra): (Vec<u32>, Vec<u32>) = ids.iter().partition(|&&id| (id as usize) < corpus.n);
+    s.rows.resize(base.len() * DIM, 0);
+    corpus.ssd.read_rows(&base, &mut s.rows);
+    s.w.clear();
+    s.w.extend(q768.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
+    let inv = 1.0 / query_i8(&s.w, &mut s.wq);
+    for (row, &id) in s.rows.chunks_exact(DIM).zip(&base) {
+        out.push(dot_i8i8(&s.wq, row) as f32 * inv, id);
+    }
+    for &id in &extra {
+        out.push(dot_i8i8(&s.wq, v.row(corpus, id)) as f32 * inv, id);
     }
 }
 

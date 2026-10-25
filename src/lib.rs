@@ -5,6 +5,7 @@ pub mod blas;
 pub mod data;
 pub mod eval;
 pub mod ivf;
+pub mod live;
 pub mod lut;
 pub mod postings;
 pub mod quant;

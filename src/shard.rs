@@ -22,7 +22,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 use crate::DIM;
-use crate::ivf::{Corpus, Index, Params, Rerank, Scratch, Timing, prune_threshold};
+use crate::ivf::{Corpus, Index, Params, Rerank, Scratch, Timing, View, prune_threshold};
 use crate::topk::TopK;
 
 /// Owner shard of every cluster: longest-processing-time greedy on stored slots, so each shard
@@ -189,10 +189,10 @@ fn handle(conn: TcpStream, index: &Index, corpus: &Corpus, owner: &[u16], me: u1
         }
         let words = match h.phase {
             0 => pairs_to_words(&index.search_probes(corpus, &q768, &q256, &pairs, &p, &mut s, &mut t)),
-            1 => triples_to_words(&index.candidates(&q256, &pairs, &p, &mut s, &mut t)),
+            1 => triples_to_words(&index.candidates(&q256, &pairs, &p, &View::default(), &mut s, &mut t)),
             2 => {
                 let cand = pairs.iter().map(|&(est, id)| (est, id, 0.0)).collect();
-                pairs_to_words(&index.rerank(corpus, &q768, &q256, cand, &p, &mut s, &mut t))
+                pairs_to_words(&index.rerank(corpus, &q768, &q256, cand, &p, &View::default(), &mut s, &mut t))
             }
             x => bail!("unknown phase {x}"),
         };
