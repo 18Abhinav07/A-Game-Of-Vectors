@@ -83,6 +83,26 @@ dedup and pruning.
 | 2-bit tier → 200, pruned at rank 10, w = 1.0 | 0.8929 | 612 |
 | 64 probes, 500 cand, 2-bit tier → 200, pruned w = 1.0 | 0.9191 | 362 |
 
+### Query-aware probing (DESIGN.md D12)
+RaBitQ index, 500 candidates, full rerank. Fixed nprobe against a centroid-score margin Δ, with
+the nprobe cap high enough not to bind.
+
+| config | R@10 | vectors scanned |
+|---|---|---|
+| fixed 24 probes | 0.8712 | 227k |
+| Δ = 0.10 (cap 128) | 0.8801 | 260k |
+| fixed 32 probes | 0.8876 | 305k |
+| Δ = 0.12 (cap 128) | 0.9049 | 376k |
+| fixed 48 probes | 0.9082 | 463k |
+| fixed 64 probes | 0.9192 | 623k |
+| Δ = 0.14 (cap 256) | 0.9278 | 696k |
+| Δ = 0.16 (cap 256) | 0.9387 | 925k |
+| fixed 96 probes | 0.9334 | 942k |
+| Δ = 0.18 (cap 256) | 0.9448 | 1.17M |
+| fixed 128 probes | 0.9404 | 1.26M |
+| fixed 192 probes | 0.9483 | 1.89M |
+| Δ = 0.02 / 0.06 / 0.08 | 0.624 / 0.784 / 0.841 | 18k / 79k / 155k |
+
 Ablations that show where recall comes from:
 - **LUT vs Hamming**: scoring all 18.4M codes, then reranking 1000, gives R@10 0.949 with the
   asymmetric LUT and 0.884 with Hamming distance. The float query is worth 6.5 points.

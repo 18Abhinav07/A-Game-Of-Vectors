@@ -398,6 +398,10 @@ pub struct Params {
     /// `est - w·err`. `w = 1` is the paper's ε0 = 1.9 bound; smaller `w` trades certainty for
     /// fewer rerank reads.
     pub prune: Option<(usize, f32)>,
+    /// Query-aware probing (SPANN): of the top `nprobe` clusters, scan only those whose centroid
+    /// score is within this margin of the best centroid's. Easy queries, whose neighbours sit in
+    /// one dominant cluster, scan less; `nprobe` stays the cap for hard ones.
+    pub margin: Option<f32>,
 }
 
 /// Per-thread buffers so the query path does not allocate.
@@ -432,6 +436,8 @@ pub struct Timing {
     pub scanned: u64,
     /// Candidates that reached the rerank stage after dedup and pruning.
     pub reranked: u64,
+    /// Clusters scanned.
+    pub probed: u64,
 }
 
 /// The `m`-th largest lower bound `est - w·err` among the candidates (−∞ if there are fewer
@@ -483,6 +489,11 @@ impl Index {
         for (c, &v) in s.cent.iter().enumerate() {
             probe.push(v, c as u32);
         }
+        let mut probe = probe.into_sorted();
+        if let (Some(m), Some(&(best, _))) = (p.margin, probe.first()) {
+            probe.retain(|&(v, _)| v >= best - m);
+        }
+        t.probed += probe.len() as u64;
         let t1 = std::time::Instant::now();
 
         let ids = self.ids.as_slice();
@@ -495,7 +506,7 @@ impl Index {
                 let factors = factors.as_slice();
                 // Keyed by slot, not row, so the winning slot's error factor can be found again.
                 let mut cand = TopK::new(p.cand);
-                for &(cent, c) in probe.sorted() {
+                for &(cent, c) in &probe {
                     let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
                     let nb = b1 - b0;
                     s.scores.resize(nb * BLOCK, 0);
@@ -513,7 +524,7 @@ impl Index {
             None => {
                 let lut = Lut::new(q256);
                 let mut cand = TopK::new(p.cand);
-                for &(_, c) in probe.sorted() {
+                for &(_, c) in &probe {
                     let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
                     let nb = b1 - b0;
                     s.scores.resize(nb * BLOCK, 0);

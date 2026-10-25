@@ -114,14 +114,18 @@ impl Truth {
 
 fn parse_config(s: &str, nclusters: usize) -> Result<(String, Params)> {
     let f: Vec<&str> = s.split(':').collect();
-    let (np, cand, rr, prune) = match f[..] {
-        [np, cand, rr] => (np, cand, rr, None),
-        [np, cand, rr, b] if b.starts_with('b') => {
-            let (m, w) = b[1..].split_once('x').unwrap_or((&b[1..], "1"));
-            (np, cand, rr, Some((m.parse().context("bM")?, w.parse().context("bMxW")?)))
+    let [np, cand, rr, ref opts @ ..] = f[..] else { bail!("config {s}: expected nprobe:cand:rerank[:bM[xW]][:pD]") };
+    let (mut prune, mut margin) = (None, None);
+    for o in opts {
+        match o.split_at(1) {
+            ("b", v) => {
+                let (m, w) = v.split_once('x').unwrap_or((v, "1"));
+                prune = Some((m.parse().context("bM")?, w.parse().context("bMxW")?));
+            }
+            ("p", v) => margin = Some(v.parse().context("pD")?),
+            _ => bail!("config option {o}: expected bM[xW] or pD"),
         }
-        _ => bail!("config {s}: expected nprobe:cand:rerank[:bM[xW]]"),
-    };
+    }
     let nprobe = if np == "all" { nclusters } else { np.parse()? };
     let rerank = match rr {
         "none" => Rerank::None,
@@ -134,7 +138,10 @@ fn parse_config(s: &str, nclusters: usize) -> Result<(String, Params)> {
     if let Some((m, w)) = prune {
         label += &format!(", bound-pruned at rank {m}, width {w}");
     }
-    Ok((label, Params { nprobe, cand: cand.parse()?, rerank, k: 100, prune }))
+    if let Some(d) = margin {
+        label += &format!(", probe margin {d}");
+    }
+    Ok((label, Params { nprobe, cand: cand.parse()?, rerank, k: 100, prune, margin }))
 }
 
 /// One ranked list of corpus rows per query.
@@ -356,6 +363,7 @@ fn main() -> Result<()> {
                 "stage_ms": { "route": per(stages.route), "scan": per(stages.scan), "rerank": per(stages.rerank), "tier2": per(stages.tier2) },
                 "scanned_per_query": stages.scanned as f64 / qs.len() as f64,
                 "reranked_per_query": stages.reranked as f64 / qs.len() as f64,
+                "probed_per_query": stages.probed as f64 / qs.len() as f64,
                 "qps": qps,
             });
             println!("{}", serde_json::to_string_pretty(&v)?);
