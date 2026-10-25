@@ -161,6 +161,36 @@ It costs nothing at query time, since the centroid scores already exist.
 - Per-query work now varies, so p99 matters more than mean; the M2 bench reports both. The
   margin depends on how tightly the centroids pack, so it is re-tuned at 16384 clusters.
 
+### D13. SSD mode: posting lists on disk, 113.5M vectors in well under 2 GB of RAM
+RAM mode keeps every code, id and RaBitQ factor resident: about 17 GB at 113.5M with SOAR and
+the 2-bit tier, and at 1B that would be roughly 150 GB. SSD mode follows SPANN (Chen et al.,
+NeurIPS 2021): `index --pack` rewrites each cluster as one contiguous record, 4 KiB aligned
+(codes, then `[mul, err]`, then ids: 44 B per slot), so probing a cluster costs one positioned
+read. RAM holds only the centroids, the record offsets and an optional hot-cluster cache.
+- **Same results.** SSD mode reads the same bytes, so recall is identical to RAM mode (checked:
+  0.8876 at 32:500 in both modes).
+- **No RAM tier**, so the final tier picks rows by code estimate alone (`ssdN`). That needs more
+  SSD reads for the same recall: on M1 at 64 probes, 200 rows give 0.901 and 300 give 0.912
+  (RAM mode with the 2-bit tier: 0.919 at 200). 400 rows give 0.917.
+- **Measured peak RSS: 468 MB** for the M1 index (1.63 GB of posting lists), including query
+  data and ground truth. The resident set is centroids plus offsets, so it grows with K, not N.
+- **I/O pool.** macOS has no io_uring, so queue depth is the number of threads blocked in
+  `pread`. Reads run as owned jobs on a dedicated pool of 64 blocking threads. A rayon pool
+  failed here: a rayon worker that `install`s into another pool keeps stealing from its own
+  while it waits, so it started more queries on top of the pending ones (13 GB RSS, 7× lower QPS).
+- **Cold measurement.** `store::evict` drops a file's pages with `msync(MS_INVALIDATE)` (checked
+  with `mincore`: residency 1.0 → 0.0), and `F_NOCACHE` stops reads refilling the cache. Only
+  this combination makes `--cold` honest on a file that fits in RAM.
+- **Hot-cluster cache.** A sharded second-chance (CLOCK) cache of whole records under a byte
+  budget. On M1 at 512 MB (31% of the lists) the hit rate is 0.55. That cuts bytes read from
+  27.4 to 11.4 MB per query and raises QPS 85 → 139. Eval queries are replayed, so the
+  throughput loop's hit rate is optimistic; the latency pass starts from an empty cache.
+- **The cost is bandwidth.** A query at 64 probes reads 27 MB on M1 and about 39 MB on M2
+  (610 KB clusters). Cold, single-threaded, with the M2 ingest competing for the SSD
+  (preliminary): p50 13 ms, of which 8 ms is fetch and 4.4 ms is the 300-row rerank, at 85 QPS.
+  Query-aware probing (D12) cuts the fetch with the probe count: p50 7.4 ms at 21.6 MB per query.
+  Idle-machine numbers come with M2.
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.
