@@ -23,6 +23,13 @@ and fixes that.
 - **Three-tier storage**: the 1-bit scan and a 2-bit RAM tier pick the 200 candidates worth
   fetching, then int8 rows are read from SSD with parallel `pread`. This is lossless versus
   reranking all 1000, so 87 GB of rerank vectors never have to fit in RAM.
+- **SSD mode** (SPANN-style): posting lists packed one 4 KiB-aligned record per cluster and read
+  with one `pread` per probe, a CLOCK cluster cache, a blocking I/O pool. Same recall as RAM
+  mode at 468 MB peak RSS for 18.4M vectors; RAM grows with the cluster count, not N.
+- **Bound-driven rerank and query-aware probing**: the RaBitQ error bound decides which
+  candidates are worth reranking (28% fewer rows with no loss, 48% for −0.1 pt), and a
+  centroid-score margin decides how many clusters each query probes (R@10 0.939 vs 0.940 for
+  fixed 128 probes, with 27% less scan).
 - **Integer rerank** on `sdot` (int8 query × int8 row) and centroid routing on AMX via
   Accelerate.
 - **One-pass streaming ingest** at 232k rows/s. Exact ground truth is computed with sgemm while
@@ -48,7 +55,8 @@ cargo test --release
 ./scripts/m2.sh          # all 60 shards, streamed and deleted as they are ingested
 ```
 Binaries: `ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
-`search eval | routing | bench [--cold]`.
+`search [--ssd --cache-mb N] eval | routing | bench [--cold]`. Config strings are
+`nprobe:cand:rerank[:bM[xW]][:pΔ]`, with rerank one of `none | prefix | full | tieredN | ssdN`.
 
 ## Layout
 ```
@@ -57,6 +65,8 @@ src/lut.rs     asymmetric LUT scan (NEON + scalar reference, property-tested)
 src/rabitq.rs  RaBitQ rotation, residual codes, estimator and error bound
 src/tier2.rs   2-bit Lloyd-Max middle tier with per-byte score tables
 src/ivf.rs     k-means, SOAR assignment, index build, search, SSD row reader
+src/postings.rs  SSD posting lists, CLOCK cluster cache
+src/store.rs   mmap, page eviction/residency, blocking I/O pool
 src/blas.rs    Accelerate sgemm (AMX)
 src/data.rs    parquet streaming, topics, qrels
 src/eval.rs    recall, nDCG@10 (MaxP)

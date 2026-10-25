@@ -4,8 +4,9 @@ Machine: Apple M4 Pro (12 cores), 24 GB RAM, internal NVMe. Rust 2024, `target-c
 fat LTO. Every number below comes from `results/*.jsonl`, written by the binaries, and can be
 reproduced with `scripts/m1.sh` and `scripts/m2.sh`.
 
-Queries: TREC DL21 (53), DL22 (76), DL23 (82) with NIST graded labels, plus the first 1000
-MS MARCO v2.1 doc dev queries. *R@10* is overlap with the exact 768-d top-10 over the indexed
+Queries: all 1,677 TREC DL21–23 topics plus the first 1,000 MS MARCO v2.1 doc dev queries
+(2,677 in total; R@10 and latency use all of them). nDCG@10 uses the topics with NIST graded
+labels: DL21 (53), DL22 (76), DL23 (82). *R@10* is overlap with the exact 768-d top-10 over the indexed
 slice (computed during ingest, D5). *nDCG@10* is document-level MaxP against the qrels. On a
 slice of the corpus it is a relative signal only, since relevant documents outside the slice
 count as misses.
@@ -14,7 +15,7 @@ count as misses.
 
 ### Ingest
 One streaming pass over 58 GB of parquet takes 79 s (232k rows/s). Of that, 43 s is exact
-ground truth for 1,211 queries at 768-d and 256-d, computed with Accelerate sgemm while the
+ground truth for 2,677 queries at 768-d and 256-d, computed with Accelerate sgemm while the
 data streams past.
 
 ### Routing is the recall bottleneck, and SOAR fixes most of it
@@ -113,7 +114,7 @@ Ablations that show where recall comes from:
   worth fetching from SSD with no recall loss (0.8828 vs 0.8831). See DESIGN.md D9.
 
 ### Latency and throughput (warm, index resident)
-Single-thread latency is measured over all 1,211 queries. QPS is 12 threads for 10 s.
+Single-thread latency is measured over all 2,677 queries. QPS is 12 threads for 10 s.
 
 | config | p50 | p99 | route | scan | rerank | QPS |
 |---|---|---|---|---|---|---|
@@ -124,6 +125,31 @@ Single-thread latency is measured over all 1,211 queries. QPS is 12 threads for 
 These rows predate two later changes: routing on AMX (sgemm, 65 → 28 µs) and the rerank
 prefetch. The 16-probe p99 includes page faults on rerank rows. They will be re-run on an idle
 machine after the M2 ingest.
+
+### SSD mode (DESIGN.md D13): posting lists on disk
+`index --pack` turns the RaBitQ index into 1.63 GB of 4 KiB-aligned cluster records. RAM holds
+centroids, offsets and an optional cluster cache. Recall equals RAM mode for the same scan; the
+difference is the last tier, which picks SSD rows by code estimate (`ssdN`) because there is no
+2-bit RAM tier.
+
+| config | R@10 |
+|---|---|
+| 32 probes, 500 cand, 2-bit RAM tier → 200 (RAM mode) | 0.893 |
+| 32 probes, 500 cand, top 200 by estimate | 0.870 |
+| 32 probes, 500 cand, top 300 / 400 | 0.881 / 0.886 |
+| 64 probes, 500 cand, top 300 / 400 | 0.912 / 0.917 |
+| 64 probes, 1000 cand, top 500 | 0.921 |
+| Δ = 0.12 (cap 128), 500 cand, top 300 | 0.898 |
+
+Cold, every byte from SSD (`bench --cold` evicts both files; latency is single-threaded, QPS
+is 12 threads). **Preliminary**: the M2 ingest was writing to the same SSD, which then served
+115k random reads/s at QD64 against 215k idle. Re-run pending on an idle machine.
+
+| config | cache | p50 | p99 | fetch | rerank | MB read/query | QPS | peak RSS |
+|---|---|---|---|---|---|---|---|---|
+| 64:500:ssd300 | none | 13.2 ms | 22.3 ms | 8.1 ms | 4.4 ms | 27.4 | 85 | 468 MB |
+| 64:500:ssd300 | 512 MB (hit 0.55) | 8.8 ms | | | | 11.4 | 139 | 1.34 GB |
+| 256:500:ssd300:p0.12 | none | 7.4 ms | 50 ms | | | 21.6 | 84 | |
 
 ### Kernels (`cargo run --release --example kernel`, `--example ssd`)
 - 1-bit LUT scan (`vqtbl1q_u8`, 64 tables × 16 entries, u16 accumulators): ~950M codes/s per
