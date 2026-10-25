@@ -192,6 +192,29 @@ SSD mode, cold, no cache:
 warm p50 is higher (3.43 vs 2.87 ms): many of its queries sit at the budget, and 256 small
 probes cost more per slot than 96 large ones.
 
+### Sharding (DESIGN.md D16): 4 shard processes and a coordinator
+Clusters are split across 4 shard processes by stored slots (9.21M slots each). The coordinator
+routes and merges. R@10 vs exact 768-d search; "reranked" counts rows entering the rerank, per
+query, summed over shards.
+
+| config | single node | 4 shards, one-shot | one-shot, budgets ÷ 4 | 4 shards, two-phase |
+|---|---|---|---|---|
+| 32:500:full | 0.8876 (423 rows) | 0.8959 (1954) | 0.8789 (490, 32:125) | **0.8879** (440) |
+| 64:500:tiered200 | 0.9191 (415) | 0.9282 (1945) | 0.9101 (488, 64:125:tiered50) | **0.9194** (433) |
+| 64:500:ssd300 | 0.9120 (300 read) | 0.9251 (≤1200 read) | 0.8973 (300 read, ssd75) | **0.9120** (300 read) |
+| 64:500:full:p0.16:s1000k | 0.9115 | 0.9202 | | **0.9118** |
+| 64:500:ssd300:b10x0.5 | 0.8932 | | | **0.8932** |
+| 64:500:none | 0.4536 | | | **0.4536** |
+
+Latency, RAM mode, warm, 64:500:tiered200, everything on one 12-core machine over loopback (Low
+Power Mode, same session, so compare rows):
+
+| | p50 | p99 | QPS | shard wait per query |
+|---|---|---|---|---|
+| single process | 2.13 ms | 2.95 ms | 1677 | |
+| 4 shards, one-shot | 1.90 ms | 2.61 ms | 735 | 1.87 ms |
+| 4 shards, two-phase | **1.20 ms** | **1.93 ms** | 1380 | 1.19 ms |
+
 ### Against FAISS (same slice, same code budget, same rerank)
 `scripts/faiss_baseline.py` (faiss-cpu 1.15.1) indexes the same 256-d prefixes with 4096 IVF
 lists and 32 B codes, then reranks the top 500 against the same 768-d int8 rows, so only the

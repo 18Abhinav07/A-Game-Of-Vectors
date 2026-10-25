@@ -9,6 +9,7 @@ pub mod lut;
 pub mod postings;
 pub mod quant;
 pub mod rabitq;
+pub mod shard;
 pub mod store;
 pub mod tier2;
 pub mod topk;
