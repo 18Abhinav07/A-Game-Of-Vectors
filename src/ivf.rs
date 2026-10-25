@@ -393,6 +393,11 @@ pub struct Params {
     pub cand: usize,
     pub rerank: Rerank,
     pub k: usize,
+    /// Bound-driven pruning (RaBitQ indexes only), as `(m, w)`: before rerank, drop every
+    /// candidate whose upper bound `est + w·err` is below the `m`-th best lower bound
+    /// `est - w·err`. `w = 1` is the paper's ε0 = 1.9 bound; smaller `w` trades certainty for
+    /// fewer rerank reads.
+    pub prune: Option<(usize, f32)>,
 }
 
 /// Per-thread buffers so the query path does not allocate.
@@ -425,6 +430,20 @@ pub struct Timing {
     /// Part of `rerank` spent in the RAM middle tier (tiered rerank only).
     pub tier2: u64,
     pub scanned: u64,
+    /// Candidates that reached the rerank stage after dedup and pruning.
+    pub reranked: u64,
+}
+
+/// The `m`-th largest lower bound `est - w·err` among the candidates (−∞ if there are fewer
+/// than `m`). Any candidate whose upper bound is below it is, with high probability, outranked
+/// by at least `m` others, so it cannot reach the top `m`.
+pub fn prune_threshold(cand: &[(f32, u32, f32)], m: usize, w: f32) -> f32 {
+    if m == 0 || cand.len() < m {
+        return f32::NEG_INFINITY;
+    }
+    let mut lo: Vec<f32> = cand.iter().map(|&(est, _, err)| est - w * err).collect();
+    let (_, &mut v, _) = lo.select_nth_unstable_by(m - 1, |a, b| b.total_cmp(a));
+    v
 }
 
 impl Index {
@@ -468,10 +487,13 @@ impl Index {
 
         let ids = self.ids.as_slice();
         let blocks = self.blocks.as_slice();
-        let mut cand: Vec<(f32, u32)> = match &self.rabitq {
+        // (estimate, corpus row, error half-width). Global sign codes carry no bound, so their
+        // width is infinite and pruning keeps everything.
+        let mut cand: Vec<(f32, u32, f32)> = match &self.rabitq {
             Some((rot, factors)) => {
                 let rq = rabitq::Query::new(rot, q256);
                 let factors = factors.as_slice();
+                // Keyed by slot, not row, so the winning slot's error factor can be found again.
                 let mut cand = TopK::new(p.cand);
                 for &(cent, c) in probe.sorted() {
                     let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
@@ -480,13 +502,13 @@ impl Index {
                     crate::lut::scan(&rq.lut, &blocks[b0 * BLOCK_BYTES..b1 * BLOCK_BYTES], &mut s.scores);
                     t.scanned += (nb * BLOCK) as u64;
                     let slots = ids[b0 * BLOCK..b1 * BLOCK].iter().zip(factors[b0 * BLOCK * 2..b1 * BLOCK * 2].chunks_exact(2));
-                    for (&sc, (&id, f)) in s.scores.iter().zip(slots) {
+                    for (j, (&sc, (&id, f))) in s.scores.iter().zip(slots).enumerate() {
                         if id != PAD {
-                            cand.push(rq.estimate(cent, f[0], sc), id);
+                            cand.push(rq.estimate(cent, f[0], sc), (b0 * BLOCK + j) as u32);
                         }
                     }
                 }
-                cand.into_sorted()
+                cand.into_sorted().into_iter().map(|(est, slot)| (est, ids[slot as usize], factors[slot as usize * 2 + 1])).collect()
             }
             None => {
                 let lut = Lut::new(q256);
@@ -505,7 +527,7 @@ impl Index {
                         cand.push(sc, id);
                     }
                 }
-                cand.into_sorted().into_iter().map(|(sc, id)| (lut.to_float(sc), id)).collect()
+                cand.into_sorted().into_iter().map(|(sc, id)| (lut.to_float(sc), id, f32::INFINITY)).collect()
             }
         };
         // A spilled vector can be reached through both of its clusters: keep its best estimate
@@ -515,6 +537,12 @@ impl Index {
         // in flight instead of stalling on each one.
         cand.sort_unstable_by(|a, b| a.1.cmp(&b.1).then(b.0.total_cmp(&a.0)));
         cand.dedup_by_key(|x| x.1);
+        if let Some((m, w)) = p.prune {
+            let tau = prune_threshold(&cand, m, w);
+            cand.retain(|&(est, _, err)| est + w * err >= tau);
+        }
+        t.reranked += cand.len() as u64;
+        let cand: Vec<(f32, u32)> = cand.into_iter().map(|(est, id, _)| (est, id)).collect();
         let t2 = std::time::Instant::now();
 
         let mut out = TopK::new(p.k);
@@ -589,5 +617,24 @@ impl Index {
         t.scan += (t2 - t1).as_nanos() as u64;
         t.rerank += (t3 - t2).as_nanos() as u64;
         out.into_sorted()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_threshold_is_mth_lower_bound() {
+        // Lower bounds at w = 1: 0.8, 0.5, 0.65, 0.1.
+        let cand = [(0.9, 0, 0.1), (0.7, 1, 0.2), (0.7, 2, 0.05), (0.3, 3, 0.2)];
+        assert_eq!(prune_threshold(&cand, 2, 1.0), 0.65);
+        assert_eq!(prune_threshold(&cand, 5, 1.0), f32::NEG_INFINITY);
+        // The top-m candidates always survive: each one's upper bound is at least τ.
+        let tau = prune_threshold(&cand, 2, 1.0);
+        let kept: Vec<u32> = cand.iter().filter(|c| c.0 + c.2 >= tau).map(|c| c.1).collect();
+        assert_eq!(kept, [0, 1, 2]);
+        // Narrower bounds raise τ and prune harder.
+        assert!(prune_threshold(&cand, 2, 0.5) > tau);
     }
 }

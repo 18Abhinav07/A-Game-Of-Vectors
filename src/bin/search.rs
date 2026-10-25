@@ -114,7 +114,14 @@ impl Truth {
 
 fn parse_config(s: &str, nclusters: usize) -> Result<(String, Params)> {
     let f: Vec<&str> = s.split(':').collect();
-    let [np, cand, rr] = f[..] else { bail!("config {s}: expected nprobe:cand:rerank") };
+    let (np, cand, rr, prune) = match f[..] {
+        [np, cand, rr] => (np, cand, rr, None),
+        [np, cand, rr, b] if b.starts_with('b') => {
+            let (m, w) = b[1..].split_once('x').unwrap_or((&b[1..], "1"));
+            (np, cand, rr, Some((m.parse().context("bM")?, w.parse().context("bMxW")?)))
+        }
+        _ => bail!("config {s}: expected nprobe:cand:rerank[:bM[xW]]"),
+    };
     let nprobe = if np == "all" { nclusters } else { np.parse()? };
     let rerank = match rr {
         "none" => Rerank::None,
@@ -123,8 +130,11 @@ fn parse_config(s: &str, nclusters: usize) -> Result<(String, Params)> {
         t if t.starts_with("tiered") => Rerank::Tiered(t["tiered".len()..].parse().context("tieredN")?),
         _ => bail!("rerank must be none, prefix, full or tieredN"),
     };
-    let label = format!("ivf {np} probes, {cand} cand, rerank {rr}");
-    Ok((label, Params { nprobe, cand: cand.parse()?, rerank, k: 100 }))
+    let mut label = format!("ivf {np} probes, {cand} cand, rerank {rr}");
+    if let Some((m, w)) = prune {
+        label += &format!(", bound-pruned at rank {m}, width {w}");
+    }
+    Ok((label, Params { nprobe, cand: cand.parse()?, rerank, k: 100, prune }))
 }
 
 /// One ranked list of corpus rows per query.
@@ -137,6 +147,7 @@ struct Scored {
     ndcg: Vec<(String, f64)>,
     ms_per_query: Option<f64>,
     scanned: Option<f64>,
+    reranked: Option<f64>,
 }
 
 fn score(label: &str, run: &Run, qs: &Queries, gt768: &Truth, gt256: &Truth, corpus: &Corpus, qrels: &HashMap<String, Qrels>) -> Scored {
@@ -152,7 +163,7 @@ fn score(label: &str, run: &Run, qs: &Queries, gt768: &Truth, gt256: &Truth, cor
             (set.to_string(), mean(per_query))
         })
         .collect();
-    Scored { label: label.into(), recall768, recall256, ndcg, ms_per_query: None, scanned: None }
+    Scored { label: label.into(), recall768, recall256, ndcg, ms_per_query: None, scanned: None, reranked: None }
 }
 
 fn flat_hamming_rerank(corpus: &Corpus, qs: &Queries, cand: usize) -> Run {
@@ -176,33 +187,36 @@ fn flat_hamming_rerank(corpus: &Corpus, qs: &Queries, cand: usize) -> Run {
         .collect()
 }
 
-fn ivf_run(index: &Index, corpus: &Corpus, qs: &Queries, p: &Params) -> (Run, f64, f64) {
+/// Returns the run, inverse throughput (ms) and mean vectors scanned and reranked per query.
+fn ivf_run(index: &Index, corpus: &Corpus, qs: &Queries, p: &Params) -> (Run, f64, f64, f64) {
     let t0 = Instant::now();
-    let res: Vec<(Vec<u32>, u64)> = (0..qs.len())
+    let res: Vec<(Vec<u32>, u64, u64)> = (0..qs.len())
         .into_par_iter()
         .map_init(Scratch::new, |s, i| {
             let mut t = Timing::default();
             let r = index.search(corpus, qs.q768(i), qs.q256(i), p, s, &mut t);
-            (r.into_iter().map(|x| x.1).collect(), t.scanned)
+            (r.into_iter().map(|x| x.1).collect(), t.scanned, t.reranked)
         })
         .collect();
     let wall = t0.elapsed().as_secs_f64();
     let scanned = mean(res.iter().map(|r| r.1 as f64));
+    let reranked = mean(res.iter().map(|r| r.2 as f64));
     // Wall time across threads, so this is inverse throughput, not latency.
     let ms = wall * 1e3 / qs.len() as f64;
-    (res.into_iter().map(|r| r.0).collect(), ms, scanned)
+    (res.into_iter().map(|r| r.0).collect(), ms, scanned, reranked)
 }
 
 fn print_table(rows: &[Scored]) {
     let sets: Vec<&str> = EVAL_SETS.iter().map(|s| s.0).collect();
     print!("| run | R@10 vs 768 | R@10 vs 256 |");
     sets.iter().for_each(|s| print!(" nDCG@10 {s} |"));
-    println!(" vectors scanned |");
-    println!("|---|---|---|{}---|", "---|".repeat(sets.len()));
+    println!(" vectors scanned | reranked |");
+    println!("|---|---|---|{}---|---|", "---|".repeat(sets.len()));
     for r in rows {
         print!("| {} | {:.4} | {:.4} |", r.label, r.recall768, r.recall256);
         r.ndcg.iter().for_each(|(_, v)| print!(" {v:.4} |"));
-        println!(" {} |", r.scanned.map_or("-".into(), |s| format!("{s:.0}")));
+        let f = |v: Option<f64>| v.map_or("-".into(), |s| format!("{s:.0}"));
+        println!(" {} | {} |", f(r.scanned), f(r.reranked));
     }
 }
 
@@ -250,11 +264,12 @@ fn main() -> Result<()> {
             }
             for c in configs.split(',') {
                 let (label, p) = parse_config(c, index.k)?;
-                let (run, ms, scanned) = ivf_run(&index, &corpus, &qs, &p);
+                let (run, ms, scanned, reranked) = ivf_run(&index, &corpus, &qs, &p);
                 let mut s = score(&label, &run, &qs, &gt768, &gt256, &corpus, &qrels);
                 s.ms_per_query = Some(ms);
                 s.scanned = Some(scanned);
-                eprintln!("{label}: R@10 {:.4}", s.recall768);
+                s.reranked = Some(reranked);
+                eprintln!("{label}: R@10 {:.4}, {reranked:.0} reranked", s.recall768);
                 rows.push(s);
             }
             print_table(&rows);
@@ -263,7 +278,7 @@ fn main() -> Result<()> {
                     "kind": "eval", "rows": corpus.n, "clusters": index.k, "run": r.label,
                     "recall10_768": r.recall768, "recall10_256": r.recall256,
                     "ndcg10": r.ndcg.iter().cloned().collect::<HashMap<_, _>>(),
-                    "inverse_qps_ms": r.ms_per_query, "scanned": r.scanned,
+                    "inverse_qps_ms": r.ms_per_query, "scanned": r.scanned, "reranked": r.reranked,
                 }))?;
             }
         }
@@ -340,6 +355,7 @@ fn main() -> Result<()> {
                 "latency_ms": { "mean": mean(lat.iter().copied()), "p50": pct(&lat, 0.5), "p99": pct(&lat, 0.99), "max": pct(&lat, 1.0) },
                 "stage_ms": { "route": per(stages.route), "scan": per(stages.scan), "rerank": per(stages.rerank), "tier2": per(stages.tier2) },
                 "scanned_per_query": stages.scanned as f64 / qs.len() as f64,
+                "reranked_per_query": stages.reranked as f64 / qs.len() as f64,
                 "qps": qps,
             });
             println!("{}", serde_json::to_string_pretty(&v)?);

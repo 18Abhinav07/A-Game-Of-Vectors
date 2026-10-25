@@ -121,13 +121,30 @@ every bit equally informative. The estimator is unbiased with a stated error bou
 (`rabitq::encode` returns it; a test checks coverage).
 - The LUT kernel is unchanged: Σ sign·q = 2·Σ bit·q − Σ q, so each slot costs one FMA on top of
   the table lookups. The scan takes 6% longer (0.554 vs 0.521 ms at 32 probes).
-- Each slot stores `[mul, err]`, 8 B more per slot (16 B per vector with SOAR). `err` is not used
-  yet; it is stored for bound-driven rerank.
+- Each slot stores `[mul, err]`, 8 B more per slot (16 B per vector with SOAR). `err` drives
+  rerank pruning (D11).
 - The two SOAR copies of a vector now carry different codes and scores, so dedup keeps the
   better copy.
 - M1, 32 probes: R@10 0.883 → 0.894 at 1000 candidates, 0.820 → 0.867 at 200. 500 RaBitQ
   candidates (0.888) beat 1000 global-code candidates (0.883), halving rerank work. At 64 probes:
   0.910 → 0.926.
+
+### D11. Bound-driven rerank: rerank depth set per query by the RaBitQ error bound
+A fixed candidate count spends the same rerank budget on every query, though an easy query's
+top 10 stand far above the rest and a hard query's do not. Each RaBitQ estimate comes with a
+half-width `err`, so after dedup the engine computes τ, the m-th best lower bound `est − w·err`,
+and drops every candidate whose upper bound `est + w·err` is below τ: with high probability it
+is outranked by m others. The rest go to rerank (`search ... 32:1000:full:b10x0.8`).
+- At `w = 1` (the paper's ε0 = 1.9) it is lossless (0.8936 at 32 probes) but prunes only 850 →
+  612 rows. The bound is conservative, and it describes the 256-d prefix score while the rerank
+  ranks by 768-d.
+- Narrowed bounds are the useful setting. At equal rerank work they beat a fixed cutoff:
+  0.890 vs 0.885 at about 340 rows (w = 0.7), and 0.882 vs 0.874 at about 230 (w = 0.6).
+  w = 0.8 reranks 446 rows for 0.8926, against 850 rows for 0.8936.
+- Combined with the 2-bit tier (D9) at w = 1, recall is unchanged and the tier scores 28% fewer
+  rows. The tier's own top-200 cut remains the cheaper way to limit SSD reads at fixed recall;
+  pruning removes the rows neither tier needs to see.
+- Global sign codes carry no bound (width ∞), so pruning is a no-op on those indexes.
 
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
