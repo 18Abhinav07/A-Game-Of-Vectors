@@ -205,10 +205,20 @@ impl Postings {
     /// The records of `clusters`, in order. Misses are read as jobs on the I/O pool, so a query
     /// keeps one request per missed cluster in flight.
     pub fn fetch(&self, clusters: &[u32]) -> Vec<Arc<Record>> {
-        let mut out: Vec<Option<Arc<Record>>> = clusters.iter().map(|&c| self.cache.as_ref().and_then(|cache| cache.get(c))).collect();
-        let miss: Vec<usize> = (0..clusters.len()).filter(|&i| out[i].is_none()).collect();
+        let mut out: Vec<Option<Arc<Record>>> = (0..clusters.len()).map(|_| None).collect();
+        self.fetch_each(clusters, |i, r| out[i] = Some(r.clone()));
+        out.into_iter().map(|r| r.expect("hit or read")).collect()
+    }
+
+    /// Calls `f(i, record of clusters[i])` once per cluster: cache hits first, then reads in
+    /// completion order, so the caller scans while the remaining reads are in flight. Returns
+    /// the nanoseconds spent blocked waiting for reads.
+    pub fn fetch_each(&self, clusters: &[u32], mut f: impl FnMut(usize, &Arc<Record>)) -> u64 {
+        let hits: Vec<Option<Arc<Record>>> = clusters.iter().map(|&c| self.cache.as_ref().and_then(|cache| cache.get(c))).collect();
+        let miss: Vec<usize> = (0..clusters.len()).filter(|&i| hits[i].is_none()).collect();
         self.stats.hits.fetch_add((clusters.len() - miss.len()) as u64, Relaxed);
         self.stats.misses.fetch_add(miss.len() as u64, Relaxed);
+        // Submit the reads before touching the hits, so the device starts working at once.
         let jobs = miss
             .iter()
             .map(|&i| {
@@ -221,15 +231,25 @@ impl Postings {
                 }) as Box<dyn FnOnce() -> Record + Send>
             })
             .collect();
-        for (&i, r) in miss.iter().zip(crate::store::io_pool().run(jobs)) {
+        let done = crate::store::io_pool().stream(jobs);
+        for (i, r) in hits.iter().enumerate() {
+            if let Some(r) = r {
+                f(i, r);
+            }
+        }
+        let mut waited = 0u64;
+        for _ in 0..miss.len() {
+            let t = std::time::Instant::now();
+            let (j, r) = done.recv().expect("io job panicked");
+            waited += t.elapsed().as_nanos() as u64;
             self.stats.bytes_read.fetch_add(r.len_bytes() as u64, Relaxed);
-            let r = Arc::new(r);
+            let (i, r) = (miss[j], Arc::new(r));
             if let Some(cache) = &self.cache {
                 cache.insert(clusters[i], r.clone());
             }
-            out[i] = Some(r);
+            f(i, &r);
         }
-        out.into_iter().map(|r| r.expect("hit or read")).collect()
+        waited
     }
 }
 

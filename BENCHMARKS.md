@@ -150,6 +150,8 @@ is 12 threads). **Preliminary**: the M2 ingest was writing to the same SSD, whic
 | 64:500:ssd300 | none | 13.2 ms | 22.3 ms | 8.1 ms | 4.4 ms | 27.4 | 85 | 468 MB |
 | 64:500:ssd300 | 512 MB (hit 0.55) | 8.8 ms | | | | 11.4 | 139 | 1.34 GB |
 | 256:500:ssd300:p0.12 | none | 7.4 ms | 50 ms | | | 21.6 | 84 | |
+| 64:500:ssd300, scan while reading | none | 11.8 ms | 18.4 ms | 6.8 ms blocked | 4.1 ms | 27.4 | 86 | 303 MB |
+| 256:500:ssd300:p0.12, scan while reading | none | 7.2 ms | 51 ms | 5.9 ms blocked | 4.8 ms | 21.6 | 101 | 296 MB |
 
 ### Kernels (`cargo run --release --example kernel`, `--example ssd`)
 - 1-bit LUT scan (`vqtbl1q_u8`, 64 tables × 16 entries, u16 accumulators): ~950M codes/s per
