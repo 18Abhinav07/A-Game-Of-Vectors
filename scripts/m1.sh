@@ -18,3 +18,10 @@ $B/search --index data/index --log $LOG eval --hamming --configs "all:1000:full"
 for c in 16:1000:full 32:1000:full 64:1000:full; do
   $B/search --index data/index --log $LOG bench --config $c --seconds 10
 done
+# D18: BM25 over the passage text (data/raw/text/msmarco_v2.1_doc_segmented_0{0..9}.json.gz),
+# hybrid fusion and filters. Needs the RaBitQ index in data/index-rabitq.
+if ls data/raw/text/*.json.gz >/dev/null 2>&1; then
+  $B/bm25 --ingest data/ingest --text data/raw/text --out data/bm25
+  $B/search --index data/index-rabitq --log results/m1-hybrid.jsonl hybrid --weights 1,0.5,0.3,0.2,0.1
+  $B/search --index data/index-rabitq --log results/m1-filter.jsonl filter
+fi

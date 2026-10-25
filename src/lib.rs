@@ -2,8 +2,10 @@
 //! See DESIGN.md for the decisions behind each module.
 
 pub mod blas;
+pub mod bm25;
 pub mod data;
 pub mod eval;
+pub mod filter;
 pub mod ivf;
 pub mod live;
 pub mod lut;

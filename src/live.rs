@@ -374,7 +374,7 @@ impl<'a> Live<'a> {
     }
 
     pub fn view(&self) -> View<'_> {
-        View { deleted: Some(&self.deleted), delta: Some(&self.delta) }
+        View { deleted: Some(&self.deleted), delta: Some(&self.delta), allow: None }
     }
 
     /// `Index::search` over the live state, returning external ids.

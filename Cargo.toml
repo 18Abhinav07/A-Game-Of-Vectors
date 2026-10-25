@@ -9,6 +9,7 @@ arrow-array = "60.0.0"
 arrow-schema = "60.0.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 clap = { version = "4.6.7", features = ["derive"] }
+flate2 = "1.1.10"
 memmap2 = "0.9.12"
 parquet = { version = "60.0.0", default-features = false, features = ["arrow", "snap"] }
 rayon = "1.12.0"

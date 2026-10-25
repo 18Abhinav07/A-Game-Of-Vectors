@@ -236,6 +236,46 @@ warm, in Low Power Mode, so compare rows.
 | replay on open | 12.0 s |
 | compaction (merge 36.8M slots, drop 3.68M dead) | 8.2 s, plus the posting-list pack |
 
+### Filters (DESIGN.md D18): domain allowlists from 100% to 0.1% of rows
+Whole hosts are allowed until they hold the target fraction of rows. R@10 is against the exact
+filtered top-10 (int8 scores), over every 4th query (670). Config 64:500:full. Latency is
+single-thread, warm, Low Power Mode, so compare rows.
+
+| allowed rows (hosts) | post | expand 20k | expand 60k | expand 200k | brute | **auto** |
+|---|---|---|---|---|---|---|
+| 100%: 18,380,565 (385,713) | 0.9222, 1.66 ms | 0.6622, 0.26 ms | 0.7737, 0.38 ms | 0.8615, 0.74 ms | - | **post: 0.9222, 1.68 ms** |
+| 50%: 9,190,342 (205,897) | 0.9110, 1.78 ms | 0.7167, 0.35 ms | 0.8169, 0.59 ms | 0.8918, 1.35 ms | - | **post: 0.9110, 1.77 ms** |
+| 10%: 2,073,361 (35,652) | 0.8867, 2.03 ms | 0.8037, 1.03 ms | 0.8760, 2.31 ms | 0.9366, 6.18 ms | - | **expand 200k: 0.9366, 6.19 ms** |
+| 1%: 183,811 (1,389) | 0.7776, 2.97 ms | 0.8775, 15.3 ms | 0.9213, 23.7 ms | 0.9499, 46.7 ms | 0.9999, 3.21 ms | **brute: 0.9999, 3.21 ms** |
+| 0.1%: 18,390 (659) | 0.7712, 1.99 ms | 0.9879, 56.6 ms | 0.9888, 93.5 ms | 0.9888, 93.4 ms | 0.9987, 0.33 ms | **brute: 0.9987, 0.34 ms** |
+
+Probes for the expanding plan at 200k allowed slots: 22, 45, 208, 1,588, 3,322 (down the rows).
+Exact filtered truth for 670 queries: 33 s at 100%, 0.2 s at 0.1%.
+
+### Hybrid (DESIGN.md D18): BM25, dense, and weighted reciprocal rank fusion
+nDCG@10 (MaxP), all 2,677 queries. RRF k 60 over the top 100 of each list; "x w" is the weight
+on the BM25 list.
+
+| run | R@10 vs 768 | DL21 | DL22 | DL23 | dev |
+|---|---|---|---|---|---|
+| BM25 (k1 0.9, b 0.4) | 0.1896 | 0.4222 | 0.1928 | 0.1706 | 0.1653 |
+| exact 768-d | 1.0000 | 0.5657 | 0.3142 | 0.2551 | 0.2420 |
+| rrf(BM25 x1, exact) | 0.4552 | 0.5361 | 0.2982 | 0.2547 | 0.2239 |
+| rrf(BM25 x0.5, exact) | 0.6431 | 0.5598 | 0.3166 | 0.2665 | 0.2371 |
+| rrf(BM25 x0.3, exact) | 0.7583 | 0.5635 | 0.3162 | **0.2694** | 0.2408 |
+| rrf(BM25 x0.2, exact) | 0.8318 | **0.5666** | **0.3166** | 0.2665 | **0.2431** |
+| rrf(BM25 x0.1, exact) | 0.9154 | 0.5679 | 0.3117 | 0.2587 | 0.2431 |
+| ivf 64:500:tiered200 | 0.9191 | 0.5564 | 0.3130 | 0.2512 | 0.2378 |
+| rrf(BM25 x1, ivf) | 0.4474 | 0.5346 | 0.2973 | 0.2539 | 0.2216 |
+| rrf(BM25 x0.3, ivf) | 0.7164 | 0.5560 | 0.3158 | 0.2647 | 0.2376 |
+| rrf(BM25 x0.2, ivf) | 0.7825 | 0.5567 | 0.3148 | 0.2614 | 0.2395 |
+
+| BM25 index | |
+|---|---|
+| build (10 files, 12 threads) | 137 s, 7.5 GB peak |
+| terms / postings / on disk | 6.32M / 1.54B / 3.3 GB |
+| query (TAAT, single-thread) | p50 24.5 ms, p99 124 ms, 6.6M postings decoded |
+
 ### Against FAISS (same slice, same code budget, same rerank)
 `scripts/faiss_baseline.py` (faiss-cpu 1.15.1) indexes the same 256-d prefixes with 4096 IVF
 lists and 32 B codes, then reranks the top 500 against the same 768-d int8 rows, so only the

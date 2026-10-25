@@ -459,13 +459,16 @@ pub struct Params {
     pub budget: Option<usize>,
 }
 
-/// What a query sees beyond the immutable base index (D17): rows to hide (tombstones) and a
-/// delta segment of rows inserted since the build. The default view is the base alone.
+/// What a query sees beyond the immutable base index: rows to hide (tombstones, D17), a delta
+/// segment of rows inserted since the build (D17), and a filter's allowed rows (D18). The
+/// default view is the base alone.
 #[derive(Clone, Copy, Default)]
 pub struct View<'a> {
     /// Bitset over row ids; a set bit hides the row.
     pub deleted: Option<&'a [u64]>,
     pub delta: Option<&'a crate::live::Delta>,
+    /// Bitset over row ids; when present, only rows with a set bit are returned.
+    pub allow: Option<&'a [u64]>,
 }
 
 #[inline]
@@ -476,7 +479,7 @@ fn bit(set: &[u64], id: u32) -> bool {
 impl View<'_> {
     #[inline]
     fn hidden(&self, id: u32) -> bool {
-        self.deleted.is_some_and(|d| bit(d, id))
+        self.deleted.is_some_and(|d| bit(d, id)) || self.allow.is_some_and(|a| !bit(a, id))
     }
 
     /// The int8 row of `id`, from the delta's row store or the corpus.
