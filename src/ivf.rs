@@ -453,6 +453,10 @@ pub struct Params {
     /// score is within this margin of the best centroid's. Easy queries, whose neighbours sit in
     /// one dominant cluster, scan less; `nprobe` stays the cap for hard ones.
     pub margin: Option<f32>,
+    /// Per-query scan budget in stored slots (44 B each on SSD): clusters are taken in score
+    /// order until the next one would exceed it, so flat-score queries cannot probe up to the
+    /// cap. The best cluster is always scanned.
+    pub budget: Option<usize>,
 }
 
 /// Per-thread buffers so the query path does not allocate.
@@ -555,6 +559,17 @@ impl Index {
         let mut probe = probe.into_sorted();
         if let (Some(m), Some(&(best, _))) = (p.margin, probe.first()) {
             probe.retain(|&(v, _)| v >= best - m);
+        }
+        if let Some(b) = p.budget {
+            let mut used = 0;
+            let keep = probe
+                .iter()
+                .take_while(|&&(_, c)| {
+                    used += (self.block_off[c as usize + 1] - self.block_off[c as usize]) as usize * BLOCK;
+                    used <= b
+                })
+                .count();
+            probe.truncate(keep.max(1));
         }
         t.probed += probe.len() as u64;
         let t1 = std::time::Instant::now();

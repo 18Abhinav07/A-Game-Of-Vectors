@@ -218,6 +218,24 @@ there. Assignment stays nearest-centroid, so the estimator and SOAR are unchange
   tail item). Both change the layout, so they are left for the sharded build.
   (`results/m1-balance.jsonl`)
 
+### D15. Per-query scan budget: bounds margin probing's tail
+Margin probing (D12) gives easy queries few clusters, but queries with flat centroid scores take
+every cluster up to the cap. On M1 at Δ = 0.12 the mean scan is 491k slots, but p99 is 3.0M,
+3.4× the p99 of fixed 64 probes. That tail is the long p99 latency. `:sN` sets a budget in stored
+slots (44 B each on SSD): clusters are taken in score order until the next would exceed it, and
+the best cluster is always scanned. `eval` now reports the scan p99 and max per query.
+- **Better recall, and a hard worst case.** Δ = 0.16 with a 1M budget gives R@10 0.9244 at a mean
+  scan of 536k and a max of 1.0M. Fixed 64 probes gives 0.9191 at 623k mean (max 975k), and
+  uncapped Δ = 0.12 gives 0.9099 with a max of 3.3M. Δ = 0.20 with 1.2M gives 0.9358 against
+  fixed 96's 0.9332, at a lower mean (836k vs 942k) and max (1.2M vs 1.4M).
+- **Latency (RAM, warm, same session, Low Power Mode):** p99 8.2 → 3.3 ms against uncapped
+  Δ = 0.12. Against fixed 64 probes, p50 2.10 → 1.70 ms and QPS 1980 → 2247; p99 is 2.8 vs 3.3 ms.
+- **SSD mode, cold:** Δ = 0.16 with 800k matches fixed 64's recall (0.9122 vs 0.9120) at
+  p50 10.6 vs 13.1 ms and p99 17.7 vs 31.5 ms. Against uncapped Δ = 0.12, p99 drops 41.7 → 17.7 ms.
+  Single cold runs vary by several ms at p99.
+- A budget in slots is a budget in bytes read, which is what an SSD-bound shard has to provision.
+  The coordinator can set it per query from a latency target. (`results/m1-budget.jsonl`)
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.

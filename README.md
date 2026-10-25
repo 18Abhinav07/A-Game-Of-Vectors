@@ -30,7 +30,8 @@ and fixes that.
 - **Bound-driven rerank and query-aware probing**: the RaBitQ error bound decides which
   candidates are worth reranking (28% fewer rows with no loss, 48% for −0.1 pt), and a
   centroid-score margin decides how many clusters each query probes (R@10 0.939 vs 0.940 for
-  fixed 128 probes, with 27% less scan).
+  fixed 128 probes, with 27% less scan). A per-query scan budget bounds the tail: SSD-mode
+  cold p99 41.7 → 17.7 ms at higher recall.
 - **Measured against FAISS** (IVF-PQ, fast-scan PQ, IVF-RaBitQ) at the same code budget.
 - **Integer rerank** on `sdot` (int8 query × int8 row) and centroid routing on AMX via
   Accelerate.
@@ -96,8 +97,6 @@ What a real service would still need, roughly in order:
 - **Filters and hybrid search**: metadata predicates during the scan, plus BM25 fusion.
 - **I/O**: macOS has no io_uring, so queue depth comes from threads blocked in `pread`. On Linux,
   io_uring with registered buffers would remove the thread pool.
-- **Tail latency**: margin probing has a long p99 (~51 ms) because flat-score queries probe up to
-  the cap. A per-query byte budget would bound it.
 - **Observability**: per-stage histograms, cache and I/O metrics exported, not just bench JSON.
 - **Graph baselines**: FAISS IVF-PQ, fast-scan and RaBitQ are measured. HNSW/DiskANN on the
   same slice is not.
@@ -110,7 +109,7 @@ cargo test --release
 ```
 Binaries: `ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
 `search [--ssd --cache-mb N] eval | routing | bench [--cold]`. Config strings are
-`nprobe:cand:rerank[:bM[xW]][:pΔ]`, with rerank one of `none | prefix | full | tieredN | ssdN`.
+`nprobe:cand:rerank[:bM[xW]][:pΔ][:sN[k]]`, with rerank one of `none | prefix | full | tieredN | ssdN`.
 
 ## Layout
 ```
