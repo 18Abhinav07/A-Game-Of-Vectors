@@ -497,6 +497,8 @@ pub struct Timing {
     pub probed: u64,
     /// Part of `scan` spent waiting for posting lists (SSD mode only).
     pub fetch: u64,
+    /// Coordinator only (D16): wall time from fanning a query out to the last shard's reply.
+    pub wait: u64,
 }
 
 /// The `m`-th largest lower bound `est - w·err` among the candidates (−∞ if there are fewer
@@ -546,9 +548,9 @@ impl Index {
         Ok(())
     }
 
-    /// `q768` and `q256` must be unit length. Returns (score, corpus row), best first.
-    pub fn search(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
-        let t0 = std::time::Instant::now();
+    /// The clusters a query probes, best first, as (centroid score, cluster): the top `nprobe`,
+    /// cut by the margin and the scan budget. `q256` must be unit length.
+    pub fn route(&self, q256: &[f32], p: &Params, s: &mut Scratch) -> Vec<(f32, u32)> {
         s.cent.resize(self.k, 0.0);
         // One query against all centroids is a matrix-vector product: Accelerate runs it on AMX.
         gemm_abt(q256, &self.centroids, 1, self.k, PDIM, &mut s.cent);
@@ -565,12 +567,39 @@ impl Index {
             let keep = probe
                 .iter()
                 .take_while(|&&(_, c)| {
-                    used += (self.block_off[c as usize + 1] - self.block_off[c as usize]) as usize * BLOCK;
+                    used += self.slots(c);
                     used <= b
                 })
                 .count();
             probe.truncate(keep.max(1));
         }
+        probe
+    }
+
+    /// Stored slots of cluster `c`, padding included.
+    pub fn slots(&self, c: u32) -> usize {
+        (self.block_off[c as usize + 1] - self.block_off[c as usize]) as usize * BLOCK
+    }
+
+    /// `q768` and `q256` must be unit length. Returns (score, corpus row), best first.
+    pub fn search(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
+        let t0 = std::time::Instant::now();
+        let probe = self.route(q256, p, s);
+        t.route += t0.elapsed().as_nanos() as u64;
+        self.search_probes(corpus, q768, q256, &probe, p, s, t)
+    }
+
+    /// Scans the given (centroid score, cluster) list and reranks: everything after routing.
+    /// A shard (D16) runs this on the clusters it owns out of a coordinator's probe list.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_probes(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], probe: &[(f32, u32)], p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
+        let cand = self.candidates(q256, probe, p, s, t);
+        self.rerank(corpus, q768, q256, cand, p, s, t)
+    }
+
+    /// The scan: the best `p.cand` slots of the probed clusters by code estimate, deduplicated by
+    /// corpus row, as (estimate, row, error half-width), in row order.
+    pub fn candidates(&self, q256: &[f32], probe: &[(f32, u32)], p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32, f32)> {
         t.probed += probe.len() as u64;
         let t1 = std::time::Instant::now();
 
@@ -602,7 +631,7 @@ impl Index {
                 match &self.postings {
                     None => {
                         let factors = factors.as_slice();
-                        for &(cent, c) in &probe {
+                        for &(cent, c) in probe {
                             let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
                             scan(cent, &blocks[b0 * BLOCK_BYTES..b1 * BLOCK_BYTES], &factors[b0 * BLOCK * 2..b1 * BLOCK * 2], &ids[b0 * BLOCK..b1 * BLOCK]);
                         }
@@ -618,7 +647,7 @@ impl Index {
             None => {
                 let lut = Lut::new(q256);
                 let mut cand = TopK::new(p.cand);
-                for &(_, c) in &probe {
+                for &(_, c) in probe {
                     let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
                     let nb = b1 - b0;
                     s.scores.resize(nb * BLOCK, 0);
@@ -642,13 +671,21 @@ impl Index {
         // in flight instead of stalling on each one.
         cand.sort_unstable_by(|a, b| a.1.cmp(&b.1).then(b.0.total_cmp(&a.0)));
         cand.dedup_by_key(|x| x.1);
+        t.scan += t1.elapsed().as_nanos() as u64;
+        cand
+    }
+
+    /// Bound pruning, then the rerank of `p.rerank`, over candidates from `candidates` (or a
+    /// coordinator's global cut of several shards' candidates). Returns the top `p.k`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rerank(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], mut cand: Vec<(f32, u32, f32)>, p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
+        let t2 = std::time::Instant::now();
         if let Some((m, w)) = p.prune {
             let tau = prune_threshold(&cand, m, w);
             cand.retain(|&(est, _, err)| est + w * err >= tau);
         }
         t.reranked += cand.len() as u64;
         let cand: Vec<(f32, u32)> = cand.into_iter().map(|(est, id, _)| (est, id)).collect();
-        let t2 = std::time::Instant::now();
 
         let mut out = TopK::new(p.k);
         let mut t_mid = std::time::Instant::now();
@@ -730,10 +767,7 @@ impl Index {
                 }
             }
         }
-        let t3 = std::time::Instant::now();
-        t.route += (t1 - t0).as_nanos() as u64;
-        t.scan += (t2 - t1).as_nanos() as u64;
-        t.rerank += (t3 - t2).as_nanos() as u64;
+        t.rerank += t2.elapsed().as_nanos() as u64;
         out.into_sorted()
     }
 }

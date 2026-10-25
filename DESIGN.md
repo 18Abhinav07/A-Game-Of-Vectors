@@ -236,6 +236,48 @@ the best cluster is always scanned. `eval` now reports the scan p99 and max per 
 - A budget in slots is a budget in bytes read, which is what an SSD-bound shard has to provision.
   The coordinator can set it per query from a latency target. (`results/m1-budget.jsonl`)
 
+### D16. Sharding: cluster-partitioned shards, a routing coordinator, a two-phase merge
+Clusters, not vectors, are the unit of partition. Each shard process (`shard --shard i --of n`)
+owns a set of clusters: their posting lists, and the int8 rows of the vectors in them. A
+coordinator (`search --shards a,b,...`) keeps only the centroids (4 MB at M1, 17 MB at M2),
+routes each query with them (nprobe, margin and budget are all applied here), and sends each
+shard the probed clusters it owns. Clusters are assigned by longest-processing-time greedy on
+stored slots, a pure function of `block_off`, so coordinator and shards agree with no
+coordination; at M1 four shards hold 9,206,016 / 9,206,016 / 9,205,952 / 9,205,984 slots.
+Partitioning by cluster rather than by vector means a query touches only the shards owning its
+probed clusters. Random vector sharding would make every shard scan nprobe clusters of its own,
+multiplying the scan by the fan-out.
+
+The wire protocol is length-prefixed binary over TCP with `TCP_NODELAY`. Each coordinator thread
+keeps one persistent connection per shard, and each shard runs a thread per connection. Two merge
+protocols:
+- **One-shot**: each shard scans and reranks its clusters with the full `cand` and rerank
+  budgets and returns exact top-k. One round trip, but the union of per-shard top-`cand` lists
+  is up to n× bigger than the global one, so rerank work grows with the fan-out. Recall is ≥
+  single-node: M1, 4 shards, 32:500:full gives 0.8959 vs 0.8876, and 64:500:tiered200 gives
+  0.9282 vs 0.9191, at 4.6× the reranked rows (1954 vs 423). Dividing the budgets by n to
+  equalise work loses about 0.9 pt (0.8789, 0.9101): a per-shard cut is not the global cut,
+  because the shard with most of the good candidates gets the same quota as the others.
+- **Two-phase** (`--two-phase`): phase 1 returns each shard's top-`cand` (estimate, row, error);
+  the coordinator makes the single-node cuts (global top-`cand` slots, dedup, bound pruning,
+  and for `ssdN` the top-N rows by estimate). Phase 2 has each row reranked by the shard that
+  returned it. The global cut is valid because RaBitQ estimates are calibrated inner products,
+  not per-cluster scores, so they compare across shards. The tier-2 cut of `tieredN` is by a
+  score only the shard computes, so each shard gets its proportional share of N. The result
+  reproduces single-node recall at single-node work. M1, 4 shards: 0.8879 / 0.9194 / 0.9120 /
+  0.9118 / 0.8932 / 0.4536 against single-node 0.8876 / 0.9191 / 0.9120 / 0.9115 / 0.8932 /
+  0.4536 for full, tiered200, ssd300, margin+budget, pruned ssd300, and no rerank.
+- **Latency (4 shard processes and the coordinator on one 12-core machine, RAM mode, warm,
+  Low Power Mode, 64:500:tiered200):** single process p50 2.13 ms, 1677 QPS. Two-phase p50
+  1.20 ms (the four shards scan one query in parallel), 1380 QPS (82%, the protocol's cost on
+  shared cores). One-shot p50 1.90 ms, 735 QPS, paying for 4.6× the rerank. Two-phase is the
+  default choice: the extra round trip costs tens of µs on a LAN; the extra rerank work costs
+  half the throughput.
+- Not built: replication (each shard is one process; a replica set per cluster group and
+  hedged requests to the faster replica are the standard fix), and physically splitting the
+  files. Shards map the full files and touch only their own clusters' pages, so in SSD mode a
+  shard's reads already cover only its records. (`results/m1-shard.jsonl`)
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.

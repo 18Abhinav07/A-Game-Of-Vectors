@@ -16,6 +16,7 @@ use sieve::eval::{mean, ndcg10, recall_at};
 use sieve::ivf::{Corpus, Index, Params, Rerank, Scratch, Timing};
 use sieve::lut::hamming;
 use sieve::quant::{dot_i8, sign_code};
+use sieve::shard::{self, Client};
 use sieve::store::read_vec;
 use sieve::topk::TopK;
 use sieve::{CODE_BYTES, DIM, PDIM};
@@ -37,6 +38,14 @@ struct Args {
     /// Hot-cluster cache for SSD mode, in MiB.
     #[arg(long, default_value_t = 0)]
     cache_mb: usize,
+    /// Coordinator mode (DESIGN.md D16): route here, scan and rerank on these shard servers
+    /// (comma-separated host:port, in shard order).
+    #[arg(long)]
+    shards: Option<String>,
+    /// With --shards: the two-phase protocol (global candidate and rerank cuts, two round
+    /// trips) instead of one-shot (per-shard budgets, one round trip).
+    #[arg(long)]
+    two_phase: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -210,15 +219,55 @@ fn flat_hamming_rerank(corpus: &Corpus, qs: &Queries, cand: usize) -> Run {
         .collect()
 }
 
+/// Where queries run: in this process, or fanned out to shard servers (D16).
+struct Engine<'a> {
+    index: &'a Index,
+    corpus: &'a Corpus,
+    /// Shard addresses and the cluster → shard map.
+    shards: Option<(Vec<String>, Vec<u16>)>,
+    two_phase: bool,
+    /// One worker per rayon thread, created on first use and kept, so each thread holds one
+    /// connection per shard for the whole run (rayon's `map_init` re-inits per split, which
+    /// would open thousands of sockets).
+    workers: Vec<std::sync::Mutex<Option<Worker>>>,
+}
+
+/// One thread's query state: buffers, plus its own connection to every shard.
+struct Worker {
+    s: Scratch,
+    client: Option<Client>,
+}
+
+impl Engine<'_> {
+    fn worker(&self) -> Worker {
+        let client = self.shards.as_ref().map(|(addrs, owner)| Client::connect(addrs, owner.clone(), self.two_phase).expect("connect to shards"));
+        Worker { s: Scratch::new(), client }
+    }
+
+    fn search(&self, w: &mut Worker, qs: &Queries, i: usize, p: &Params, t: &mut Timing) -> Vec<(f32, u32)> {
+        match &mut w.client {
+            None => self.index.search(self.corpus, qs.q768(i), qs.q256(i), p, &mut w.s, t),
+            Some(c) => {
+                let t0 = Instant::now();
+                let probe = self.index.route(qs.q256(i), p, &mut w.s);
+                t.route += t0.elapsed().as_nanos() as u64;
+                c.search(qs.q768(i), &probe, p, t).expect("shard request")
+            }
+        }
+    }
+}
+
 /// Returns the run, inverse throughput (ms), vectors scanned per query (mean, p99, max) and mean
 /// reranked per query.
-fn ivf_run(index: &Index, corpus: &Corpus, qs: &Queries, p: &Params) -> (Run, f64, [f64; 3], f64) {
+fn ivf_run(e: &Engine, qs: &Queries, p: &Params) -> (Run, f64, [f64; 3], f64) {
     let t0 = Instant::now();
     let res: Vec<(Vec<u32>, u64, u64)> = (0..qs.len())
         .into_par_iter()
-        .map_init(Scratch::new, |s, i| {
+        .map(|i| {
+            let mut slot = e.workers[rayon::current_thread_index().unwrap()].lock().unwrap();
+            let w = slot.get_or_insert_with(|| e.worker());
             let mut t = Timing::default();
-            let r = index.search(corpus, qs.q768(i), qs.q256(i), p, s, &mut t);
+            let r = e.search(w, qs, i, p, &mut t);
             (r.into_iter().map(|x| x.1).collect(), t.scanned, t.reranked)
         })
         .collect();
@@ -287,6 +336,19 @@ fn main() -> Result<()> {
     }
     let qs = Queries::load(&a.ingest)?;
     eprintln!("{} rows, {} clusters, {} queries", corpus.n, index.k, qs.len());
+    let shards = a.shards.as_ref().map(|s| {
+        let addrs: Vec<String> = s.split(',').map(str::to_owned).collect();
+        let owner = shard::assign(&index, addrs.len());
+        (addrs, owner)
+    });
+    let nshards = shards.as_ref().map_or(0, |s| s.0.len());
+    let workers = (0..rayon::current_num_threads()).map(|_| Default::default()).collect();
+    let engine = Engine { index: &index, corpus: &corpus, shards, two_phase: a.two_phase, workers };
+    let shard_label = match (nshards, a.two_phase) {
+        (0, _) => String::new(),
+        (n, false) => format!(", {n} shards one-shot"),
+        (n, true) => format!(", {n} shards two-phase"),
+    };
 
     match a.cmd {
         Cmd::Eval { configs, hamming } => {
@@ -312,7 +374,8 @@ fn main() -> Result<()> {
             }
             for c in configs.split(',') {
                 let (label, p) = parse_config(c, index.k)?;
-                let (run, ms, scanned, reranked) = ivf_run(&index, &corpus, &qs, &p);
+                let label = label + &shard_label;
+                let (run, ms, scanned, reranked) = ivf_run(&engine, &qs, &p);
                 let mut s = score(&label, &run, &qs, &gt768, &gt256, &corpus, &qrels);
                 s.ms_per_query = Some(ms);
                 s.scanned = Some(scanned[0]);
@@ -373,6 +436,7 @@ fn main() -> Result<()> {
         }
         Cmd::Bench { config, seconds, cold } => {
             let (label, p) = parse_config(&config, index.k)?;
+            let label = label + &shard_label;
             // Cold: reads stop filling the page cache, and what earlier runs left there is
             // evicted, so the final tier (and in SSD mode the posting lists) come from the device.
             let evict = || -> Result<()> {
@@ -390,11 +454,11 @@ fn main() -> Result<()> {
                     post.bypass_cache();
                 }
             }
-            if !a.ssd {
+            if !a.ssd && nshards == 0 {
                 index.blocks.will_need();
             }
             // Warm-up pass, so the code paths and the RAM-resident structures are faulted in.
-            ivf_run(&index, &corpus, &qs, &p);
+            ivf_run(&engine, &qs, &p);
             evict()?;
             let io = |post: &sieve::postings::Postings| {
                 use std::sync::atomic::Ordering::Relaxed;
@@ -407,12 +471,12 @@ fn main() -> Result<()> {
                 io(post);
             }
 
-            let mut s = Scratch::new();
+            let mut w = engine.worker();
             let mut lat = Vec::with_capacity(qs.len());
             let mut stages = Timing::default();
             for i in 0..qs.len() {
                 let t = Instant::now();
-                std::hint::black_box(index.search(&corpus, qs.q768(i), qs.q256(i), &p, &mut s, &mut stages));
+                std::hint::black_box(engine.search(&mut w, &qs, i, &p, &mut stages));
                 lat.push(t.elapsed().as_secs_f64() * 1e3);
             }
             lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -422,7 +486,7 @@ fn main() -> Result<()> {
             let t0 = Instant::now();
             let mut done = 0usize;
             while t0.elapsed().as_secs_f64() < seconds {
-                ivf_run(&index, &corpus, &qs, &p);
+                ivf_run(&engine, &qs, &p);
                 done += qs.len();
             }
             let qps = done as f64 / t0.elapsed().as_secs_f64();
@@ -434,7 +498,8 @@ fn main() -> Result<()> {
                 "threads": rayon::current_num_threads(),
                 "latency_ms": { "mean": mean(lat.iter().copied()), "p50": pct(&lat, 0.5), "p99": pct(&lat, 0.99), "max": pct(&lat, 1.0) },
                 "ssd_mode": a.ssd, "cache_mb": a.cache_mb,
-                "stage_ms": { "route": per(stages.route), "scan": per(stages.scan), "fetch": per(stages.fetch), "rerank": per(stages.rerank), "tier2": per(stages.tier2) },
+                "stage_ms": { "route": per(stages.route), "scan": per(stages.scan), "fetch": per(stages.fetch), "rerank": per(stages.rerank), "tier2": per(stages.tier2), "shard_wait": per(stages.wait) },
+                "shards": nshards, "two_phase": a.two_phase,
                 "postings_io": { "latency_pass": io_latency, "qps_pass": io_qps },
                 "peak_rss_mb": peak_rss_mb(),
                 "scanned_per_query": stages.scanned as f64 / qs.len() as f64,
