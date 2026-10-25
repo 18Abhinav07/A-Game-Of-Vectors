@@ -27,11 +27,19 @@ struct Args {
     /// Store RaBitQ residual codes (per-cluster, rotated) instead of global sign codes.
     #[arg(long)]
     rabitq: bool,
+    /// Only write SSD posting lists (postings.bin, postings.off) for the existing index at --out.
+    #[arg(long)]
+    pack: bool,
 }
 
 fn main() -> Result<()> {
     let a = Args::parse();
     let t0 = Instant::now();
+    if a.pack {
+        let st = sieve::postings::pack(&a.out)?;
+        println!("{} clusters, {:.2} GB of posting lists in {:.1}s", st.clusters, st.bytes as f64 / 1e9, t0.elapsed().as_secs_f64());
+        return Ok(());
+    }
     let corpus = Corpus::open(&a.ingest)?;
     let stats = build(&corpus, &a.out, a.k, a.sample, a.iters, a.soar, a.rabitq)?;
     let secs = t0.elapsed().as_secs_f64();

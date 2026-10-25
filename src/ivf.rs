@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::blas::gemm_abt;
 use crate::lut::{BLOCK, BLOCK_BYTES, Lut, pack_block};
+use crate::postings::Postings;
 use crate::quant::{Int8Quantizer, dot_f32, dot_i8i8, normalize, query_i8};
 use crate::rabitq::{self, Rotation};
 use crate::store::{Appender, Mapped, read_vec, write_vec};
@@ -32,35 +33,40 @@ pub struct Corpus {
 /// Reads int8 rerank rows with positioned reads issued in parallel, so a query keeps many SSD
 /// requests in flight (one blocking pread per worker; macOS has no io_uring).
 pub struct RowReader {
-    file: std::fs::File,
+    file: std::sync::Arc<std::fs::File>,
 }
 
 impl RowReader {
     pub fn open(path: &Path) -> Result<Self> {
-        Ok(Self { file: std::fs::File::open(path).with_context(|| format!("open {}", path.display()))? })
+        Ok(Self { file: std::sync::Arc::new(std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?) })
     }
 
-    /// F_NOCACHE: every read goes to the device, so latency is measured cold.
+    /// F_NOCACHE: reads no longer fill the page cache (see `store::no_cache`).
     pub fn bypass_cache(&self) {
-        use std::os::unix::io::AsRawFd;
-        unsafe extern "C" {
-            fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-        }
-        #[cfg(target_os = "macos")]
-        // SAFETY: fcntl(F_NOCACHE = 48) on a descriptor this struct owns.
-        unsafe {
-            fcntl(self.file.as_raw_fd(), 48, 1);
-        }
+        crate::store::no_cache(&self.file);
     }
 
+    /// Reads rows `ids` into `out`, a few rows per job on the I/O pool, so many requests are in
+    /// flight at once.
     pub fn read_rows(&self, ids: &[u32], out: &mut [i8]) {
         use std::os::unix::fs::FileExt;
-        const PER_TASK: usize = 8;
-        out.par_chunks_mut(DIM * PER_TASK).zip(ids.par_chunks(PER_TASK)).for_each(|(o, ids)| {
-            for (row, &id) in o.chunks_exact_mut(DIM).zip(ids) {
-                self.file.read_exact_at(bytemuck::cast_slice_mut(row), id as u64 * DIM as u64).expect("rerank.i8 read");
-            }
-        });
+        const PER_JOB: usize = 4;
+        let jobs = ids
+            .chunks(PER_JOB)
+            .map(|chunk| {
+                let (file, chunk) = (self.file.clone(), chunk.to_vec());
+                Box::new(move || {
+                    let mut rows = vec![0i8; chunk.len() * DIM];
+                    for (row, &id) in rows.chunks_exact_mut(DIM).zip(&chunk) {
+                        file.read_exact_at(bytemuck::cast_slice_mut(row), id as u64 * DIM as u64).expect("rerank.i8 read");
+                    }
+                    rows
+                }) as Box<dyn FnOnce() -> Vec<i8> + Send>
+            })
+            .collect();
+        for (o, rows) in out.chunks_mut(DIM * PER_JOB).zip(crate::store::io_pool().run(jobs)) {
+            o.copy_from_slice(&rows);
+        }
     }
 }
 
@@ -372,6 +378,9 @@ pub struct Index {
     pub tier2: Option<(Tier2, Mapped<u8>, Vec<f32>)>,
     /// RaBitQ residual codes: the rotation and `[mul, err]` per slot, if built with them.
     pub rabitq: Option<(Rotation, Mapped<f32>)>,
+    /// SSD mode (D13): when set, probed clusters are read from postings.bin instead of the
+    /// mapped blocks, ids and factors, which then stay untouched and use no RAM.
+    pub postings: Option<Postings>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,6 +394,9 @@ pub enum Rerank {
     /// Prefix rerank of every candidate, then full rerank of the best `r`: the SSD tier then
     /// serves `r` reads per query instead of `cand`.
     Tiered(usize),
+    /// Full rerank of the best `r` by code estimate, read from the SSD with parallel preads.
+    /// Needs no RAM tier, so it is the rerank of SSD mode.
+    Ssd(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -411,11 +423,13 @@ pub struct Scratch {
     w: Vec<f32>,
     wq: Vec<i8>,
     rows: Vec<i8>,
+    /// (corpus row, error half-width) of every slot admitted to the candidate buffer.
+    meta: Vec<(u32, f32)>,
 }
 
 impl Scratch {
     pub fn new() -> Self {
-        Self { cent: Vec::new(), scores: Vec::new(), w: Vec::new(), wq: Vec::new(), rows: Vec::new() }
+        Self { cent: Vec::new(), scores: Vec::new(), w: Vec::new(), wq: Vec::new(), rows: Vec::new(), meta: Vec::new() }
     }
 }
 
@@ -438,6 +452,8 @@ pub struct Timing {
     pub reranked: u64,
     /// Clusters scanned.
     pub probed: u64,
+    /// Part of `scan` spent waiting for posting lists (SSD mode only).
+    pub fetch: u64,
 }
 
 /// The `m`-th largest lower bound `est - w·err` among the candidates (−∞ if there are fewer
@@ -476,7 +492,15 @@ impl Index {
                 false => None,
                 true => Some((Rotation::from_signs(read_vec(&dir.join("rotation.f32"))?), Mapped::open(&dir.join("factors.f32"))?)),
             },
+            postings: None,
         })
+    }
+
+    /// Switches to SSD mode with a cluster cache of `cache_bytes` (0 for none).
+    pub fn use_postings(&mut self, dir: &Path, cache_bytes: usize) -> Result<()> {
+        anyhow::ensure!(self.rabitq.is_some(), "SSD mode needs a RaBitQ index");
+        self.postings = Some(Postings::open(dir, cache_bytes)?);
+        Ok(())
     }
 
     /// `q768` and `q256` must be unit length. Returns (score, corpus row), best first.
@@ -503,23 +527,43 @@ impl Index {
         let mut cand: Vec<(f32, u32, f32)> = match &self.rabitq {
             Some((rot, factors)) => {
                 let rq = rabitq::Query::new(rot, q256);
-                let factors = factors.as_slice();
-                // Keyed by slot, not row, so the winning slot's error factor can be found again.
                 let mut cand = TopK::new(p.cand);
-                for &(cent, c) in &probe {
-                    let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
-                    let nb = b1 - b0;
-                    s.scores.resize(nb * BLOCK, 0);
-                    crate::lut::scan(&rq.lut, &blocks[b0 * BLOCK_BYTES..b1 * BLOCK_BYTES], &mut s.scores);
-                    t.scanned += (nb * BLOCK) as u64;
-                    let slots = ids[b0 * BLOCK..b1 * BLOCK].iter().zip(factors[b0 * BLOCK * 2..b1 * BLOCK * 2].chunks_exact(2));
-                    for (j, (&sc, (&id, f))) in s.scores.iter().zip(slots).enumerate() {
-                        if id != PAD {
-                            cand.push(rq.estimate(cent, f[0], sc), (b0 * BLOCK + j) as u32);
+                let (scores, meta) = (&mut s.scores, &mut s.meta);
+                meta.clear();
+                // Only slots that enter the buffer record their row and error factor, so the
+                // hot loop touches the ids and errors of a few thousand slots, not all of them.
+                let mut scan = |cent: f32, blocks: &[u8], factors: &[f32], ids: &[u32]| {
+                    scores.resize(blocks.len() / BLOCK_BYTES * BLOCK, 0);
+                    crate::lut::scan(&rq.lut, blocks, scores);
+                    t.scanned += scores.len() as u64;
+                    for (j, (&sc, f)) in scores.iter().zip(factors.chunks_exact(2)).enumerate() {
+                        let est = rq.estimate(cent, f[0], sc);
+                        if cand.threshold().is_some_and(|th| est <= th) || ids[j] == PAD {
+                            continue;
+                        }
+                        cand.push(est, meta.len() as u32);
+                        meta.push((ids[j], f[1]));
+                    }
+                };
+                match &self.postings {
+                    None => {
+                        let factors = factors.as_slice();
+                        for &(cent, c) in &probe {
+                            let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
+                            scan(cent, &blocks[b0 * BLOCK_BYTES..b1 * BLOCK_BYTES], &factors[b0 * BLOCK * 2..b1 * BLOCK * 2], &ids[b0 * BLOCK..b1 * BLOCK]);
+                        }
+                    }
+                    Some(post) => {
+                        let tf = std::time::Instant::now();
+                        let clusters: Vec<u32> = probe.iter().map(|x| x.1).collect();
+                        let recs = post.fetch(&clusters);
+                        t.fetch += tf.elapsed().as_nanos() as u64;
+                        for (&(cent, _), r) in probe.iter().zip(&recs) {
+                            scan(cent, r.blocks(), r.factors(), r.ids());
                         }
                     }
                 }
-                cand.into_sorted().into_iter().map(|(est, slot)| (est, ids[slot as usize], factors[slot as usize * 2 + 1])).collect()
+                cand.into_sorted().into_iter().map(|(est, k)| (est, meta[k as usize].0, meta[k as usize].1)).collect()
             }
             None => {
                 let lut = Lut::new(q256);
@@ -574,6 +618,19 @@ impl Index {
                         prefetch(corpus.rerank_row(ahead));
                     }
                     out.push(dot_i8i8(&s.wq, corpus.rerank_row(id)) as f32 * inv, id);
+                }
+            }
+            Rerank::Ssd(r) => {
+                let mut best = TopK::new(r);
+                cand.iter().for_each(|&(est, id)| best.push(est, id));
+                let ids: Vec<u32> = best.into_sorted().into_iter().map(|x| x.1).collect();
+                s.rows.resize(ids.len() * DIM, 0);
+                corpus.ssd.read_rows(&ids, &mut s.rows);
+                s.w.clear();
+                s.w.extend(q768.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
+                let inv = 1.0 / query_i8(&s.w, &mut s.wq);
+                for (row, &id) in s.rows.chunks_exact(DIM).zip(&ids) {
+                    out.push(dot_i8i8(&s.wq, row) as f32 * inv, id);
                 }
             }
             Rerank::Tiered(r) if self.tier2.is_some() => {

@@ -31,6 +31,12 @@ struct Args {
     /// Results are appended here as JSON lines.
     #[arg(long, default_value = "results/runs.jsonl")]
     log: PathBuf,
+    /// SSD mode (DESIGN.md D13): read probed clusters from postings.bin instead of RAM.
+    #[arg(long)]
+    ssd: bool,
+    /// Hot-cluster cache for SSD mode, in MiB.
+    #[arg(long, default_value_t = 0)]
+    cache_mb: usize,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -132,7 +138,8 @@ fn parse_config(s: &str, nclusters: usize) -> Result<(String, Params)> {
         "prefix" => Rerank::Prefix,
         "full" => Rerank::Full,
         t if t.starts_with("tiered") => Rerank::Tiered(t["tiered".len()..].parse().context("tieredN")?),
-        _ => bail!("rerank must be none, prefix, full or tieredN"),
+        t if t.starts_with("ssd") => Rerank::Ssd(t["ssd".len()..].parse().context("ssdN")?),
+        _ => bail!("rerank must be none, prefix, full, tieredN or ssdN"),
     };
     let mut label = format!("ivf {np} probes, {cand} cand, rerank {rr}");
     if let Some((m, w)) = prune {
@@ -236,6 +243,25 @@ fn log(path: &Path, v: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+/// Peak resident set of this process (ru_maxrss: bytes on macOS, KiB on Linux).
+fn peak_rss_mb() -> f64 {
+    #[repr(C)]
+    struct Rusage {
+        utime: [i64; 2],
+        stime: [i64; 2],
+        maxrss: i64,
+        rest: [i64; 13],
+    }
+    unsafe extern "C" {
+        fn getrusage(who: i32, usage: *mut Rusage) -> i32;
+    }
+    let mut r = Rusage { utime: [0; 2], stime: [0; 2], maxrss: 0, rest: [0; 13] };
+    // SAFETY: RUSAGE_SELF into a struct with the platform's layout (all fields are longs).
+    unsafe { getrusage(0, &mut r) };
+    let unit = if cfg!(target_os = "macos") { 1.0 } else { 1024.0 };
+    r.maxrss as f64 * unit / (1 << 20) as f64
+}
+
 fn pct(sorted: &[f64], p: f64) -> f64 {
     sorted[((sorted.len() - 1) as f64 * p).round() as usize]
 }
@@ -243,7 +269,10 @@ fn pct(sorted: &[f64], p: f64) -> f64 {
 fn main() -> Result<()> {
     let a = Args::parse();
     let corpus = Corpus::open(&a.ingest)?;
-    let index = Index::open(&a.index)?;
+    let mut index = Index::open(&a.index)?;
+    if a.ssd {
+        index.use_postings(&a.index, a.cache_mb << 20)?;
+    }
     let qs = Queries::load(&a.ingest)?;
     eprintln!("{} rows, {} clusters, {} queries", corpus.n, index.k, qs.len());
 
@@ -330,12 +359,39 @@ fn main() -> Result<()> {
         }
         Cmd::Bench { config, seconds, cold } => {
             let (label, p) = parse_config(&config, index.k)?;
+            // Cold: reads stop filling the page cache, and what earlier runs left there is
+            // evicted, so the final tier (and in SSD mode the posting lists) come from the device.
+            let evict = || -> Result<()> {
+                if cold {
+                    sieve::store::evict(&a.ingest.join("rerank.i8"))?;
+                    if a.ssd {
+                        sieve::store::evict(&a.index.join("postings.bin"))?;
+                    }
+                }
+                Ok(())
+            };
             if cold {
                 corpus.ssd.bypass_cache();
+                if let Some(post) = &index.postings {
+                    post.bypass_cache();
+                }
             }
-            index.blocks.will_need();
-            // Warm-up pass so the numbers describe a resident index, as a serving node would be.
+            if !a.ssd {
+                index.blocks.will_need();
+            }
+            // Warm-up pass, so the code paths and the RAM-resident structures are faulted in.
             ivf_run(&index, &corpus, &qs, &p);
+            evict()?;
+            let io = |post: &sieve::postings::Postings| {
+                use std::sync::atomic::Ordering::Relaxed;
+                let (h, m, b) = (post.stats.hits.swap(0, Relaxed), post.stats.misses.swap(0, Relaxed), post.stats.bytes_read.swap(0, Relaxed));
+                serde_json::json!({ "hit_rate": h as f64 / (h + m).max(1) as f64, "mb_read_per_query": b as f64 / 1e6 / qs.len() as f64 })
+            };
+            // The latency pass starts with an empty cluster cache.
+            if let Some(post) = &index.postings {
+                post.clear_cache();
+                io(post);
+            }
 
             let mut s = Scratch::new();
             let mut lat = Vec::with_capacity(qs.len());
@@ -347,6 +403,7 @@ fn main() -> Result<()> {
             }
             lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let per = |ns: u64| ns as f64 / 1e6 / qs.len() as f64;
+            let io_latency = index.postings.as_ref().map(io);
 
             let t0 = Instant::now();
             let mut done = 0usize;
@@ -355,12 +412,17 @@ fn main() -> Result<()> {
                 done += qs.len();
             }
             let qps = done as f64 / t0.elapsed().as_secs_f64();
+            // The throughput loop replays the same queries, so its cache hit rate is optimistic.
+            let io_qps = index.postings.as_ref().map(io);
 
             let v = serde_json::json!({
                 "kind": "bench", "rows": corpus.n, "clusters": index.k, "run": label, "cold": cold,
                 "threads": rayon::current_num_threads(),
                 "latency_ms": { "mean": mean(lat.iter().copied()), "p50": pct(&lat, 0.5), "p99": pct(&lat, 0.99), "max": pct(&lat, 1.0) },
-                "stage_ms": { "route": per(stages.route), "scan": per(stages.scan), "rerank": per(stages.rerank), "tier2": per(stages.tier2) },
+                "ssd_mode": a.ssd, "cache_mb": a.cache_mb,
+                "stage_ms": { "route": per(stages.route), "scan": per(stages.scan), "fetch": per(stages.fetch), "rerank": per(stages.rerank), "tier2": per(stages.tier2) },
+                "postings_io": { "latency_pass": io_latency, "qps_pass": io_qps },
+                "peak_rss_mb": peak_rss_mb(),
                 "scanned_per_query": stages.scanned as f64 / qs.len() as f64,
                 "reranked_per_query": stages.reranked as f64 / qs.len() as f64,
                 "probed_per_query": stages.probed as f64 / qs.len() as f64,

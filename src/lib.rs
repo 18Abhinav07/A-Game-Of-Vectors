@@ -6,6 +6,7 @@ pub mod data;
 pub mod eval;
 pub mod ivf;
 pub mod lut;
+pub mod postings;
 pub mod quant;
 pub mod rabitq;
 pub mod store;

@@ -14,3 +14,11 @@ $B/search --ingest data/full/ingest --index data/full/index --log $LOG eval --co
 for c in 32:500:tiered200 64:500:tiered200 64:1000:tiered200 128:1000:tiered200 64:500:tiered200:b10 256:500:tiered200:p0.12; do
   $B/search --ingest data/full/ingest --index data/full/index --log $LOG bench --config $c --seconds 10 --cold
 done
+# SSD mode (D13): posting lists on disk, RAM holds centroids, offsets and an optional cache.
+$B/index --out data/full/index --pack
+$B/search --ssd --ingest data/full/ingest --index data/full/index --log $LOG eval --configs "64:500:ssd300,64:500:ssd400,128:1000:ssd400,256:500:ssd400:p0.12"
+for c in 64:500:ssd300 256:500:ssd400:p0.12; do
+  for mb in 0 1024; do
+    $B/search --ssd --cache-mb $mb --ingest data/full/ingest --index data/full/index --log $LOG bench --config $c --seconds 10 --cold
+  done
+done
