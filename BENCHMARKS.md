@@ -215,6 +215,27 @@ Power Mode, same session, so compare rows):
 | 4 shards, one-shot | 1.90 ms | 2.61 ms | 735 | 1.87 ms |
 | 4 shards, two-phase | **1.20 ms** | **1.93 ms** | 1380 | 1.19 ms |
 
+### Live updates (DESIGN.md D17): delete 10%, reinsert through the delta path, restart, compact
+1,838,056 random rows (10%) are deleted, then reinserted under their own ids through the delta
+path. R@10 is against the exact top-10 of the rows live at each step. Latency is single-thread,
+warm, in Low Power Mode, so compare rows.
+
+| step | full | tiered200 | ssd300 | ssd300, SSD mode | scanned per query | p50 (full) |
+|---|---|---|---|---|---|---|
+| baseline | 0.9192 | 0.9191 | 0.9120 | 0.9120 | 622,762 | 1.67 ms |
+| 10% deleted (tombstones) | 0.9183 | 0.9182 | 0.9111 | 0.9111 | 622,762 | 1.70 ms |
+| reinserted (1.84M rows in delta lists) | **0.9192** | **0.9191** | **0.9120** | **0.9120** | 685,851 | 2.08 ms |
+| restarted from the log | 0.9192 | 0.9191 | 0.9120 | 0.9120 | 685,851 | 2.29 ms |
+| compacted | 0.9192 | 0.9191 | 0.9120 | 0.9120 | 622,762 | 1.80 ms |
+
+| operation | |
+|---|---|
+| delete 1.84M (184 batches, fsync each) | 0.75 s |
+| insert 1.84M (10k per batch, fsync each) | 18.3 s, 100k rows/s |
+| log size | 1.44 GB (777 B per insert) |
+| replay on open | 12.0 s |
+| compaction (merge 36.8M slots, drop 3.68M dead) | 8.2 s, plus the posting-list pack |
+
 ### Against FAISS (same slice, same code budget, same rerank)
 `scripts/faiss_baseline.py` (faiss-cpu 1.15.1) indexes the same 256-d prefixes with 4096 IVF
 lists and 32 B codes, then reranks the top 500 against the same 768-d int8 rows, so only the

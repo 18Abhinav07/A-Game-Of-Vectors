@@ -37,6 +37,10 @@ and fixes that.
   so the coordinator makes the global candidate and rerank cuts itself. The result is
   single-node recall at single-node work: 4 shards give R@10 0.9194 vs 0.9191, and p50
   2.13 → 1.20 ms from intra-query parallelism.
+- **Live updates without a rebuild**: tombstones, per-cluster delta lists in the base block
+  layout, a write-ahead log, and compaction into a new index. Delete 10% of M1 and reinsert it:
+  R@10 0.9192 before, after reinsertion, after a restart from the log, and after compaction.
+  Inserts run at 100k rows/s.
 - **Measured against FAISS** (IVF-PQ, fast-scan PQ, IVF-RaBitQ) at the same code budget.
 - **Integer rerank** on `sdot` (int8 query × int8 row) and centroid routing on AMX via
   Accelerate.
@@ -97,8 +101,8 @@ untested. Bigger clusters and more vectors per probe both work against it.
 What a real service would still need, roughly in order:
 - **Replication**: shards and the coordinator exist (D16), but each shard is one process with no
   replica or hedged requests, and shards map the full files instead of their own split.
-- **Live updates**: inserts and deletes without a rebuild (SPFresh-style split/merge with a WAL).
-  Today the index is built offline.
+- **Cluster maintenance under drift**: live updates exist (D17), but centroids are fixed at
+  build time. Data that drifts away from them needs SPFresh-style split and re-centering.
 - **Filters and hybrid search**: metadata predicates during the scan, plus BM25 fusion.
 - **I/O**: macOS has no io_uring, so queue depth comes from threads blocked in `pread`. On Linux,
   io_uring with registered buffers would remove the thread pool.
@@ -114,7 +118,7 @@ cargo test --release
 ```
 Binaries: `ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
 `search [--ssd --cache-mb N] [--shards host:port,... [--two-phase]] eval | routing | bench [--cold]`,
-`shard --shard i --of n --listen host:port [--ssd]`. Config strings are
+`search live` (delete, reinsert, replay, compact), `shard --shard i --of n --listen host:port [--ssd]`. Config strings are
 `nprobe:cand:rerank[:bM[xW]][:pΔ][:sN[k]]`, with rerank one of `none | prefix | full | tieredN | ssdN`.
 
 ## Layout
@@ -125,6 +129,7 @@ src/rabitq.rs  RaBitQ rotation, residual codes, estimator and error bound
 src/tier2.rs   2-bit Lloyd-Max middle tier with per-byte score tables
 src/ivf.rs     k-means, SOAR assignment, index build, search, SSD row reader
 src/postings.rs  SSD posting lists, CLOCK cluster cache
+src/live.rs    tombstones, delta lists, write-ahead log, compaction
 src/shard.rs   cluster→shard assignment, wire protocol, shard server, coordinator client
 src/store.rs   mmap, page eviction/residency, blocking I/O pool
 src/blas.rs    Accelerate sgemm (AMX)

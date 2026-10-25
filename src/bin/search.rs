@@ -13,7 +13,8 @@ use std::time::Instant;
 
 use sieve::data::{EVAL_SETS, Qrels, read_qrels};
 use sieve::eval::{mean, ndcg10, recall_at};
-use sieve::ivf::{Corpus, Index, Params, Rerank, Scratch, Timing};
+use sieve::ivf::{Corpus, Index, Params, Rerank, Rng, Scratch, Timing};
+use sieve::live::Live;
 use sieve::lut::hamming;
 use sieve::quant::{dot_i8, sign_code};
 use sieve::shard::{self, Client};
@@ -62,6 +63,22 @@ enum Cmd {
     },
     /// Fraction of the exact top-10 that lies in the probed clusters: the recall ceiling of routing.
     Routing,
+    /// Live updates (DESIGN.md D17): delete a random fraction of the corpus, reinsert it through
+    /// the delta path, restart from the log, compact. Recall and latency after each step.
+    Live {
+        #[arg(long, default_value = "64:500:full,64:500:tiered200")]
+        configs: String,
+        #[arg(long, default_value_t = 0.1)]
+        frac: f64,
+        /// Rows per insert call (one fsync each).
+        #[arg(long, default_value_t = 10000)]
+        batch: usize,
+        #[arg(long, default_value = "data/live.wal")]
+        wal: PathBuf,
+        /// Where compaction writes the merged index.
+        #[arg(long, default_value = "data/index-live")]
+        compact: PathBuf,
+    },
     Bench {
         #[arg(long, default_value = "32:1000:full")]
         config: String,
@@ -281,6 +298,30 @@ fn ivf_run(e: &Engine, qs: &Queries, p: &Params) -> (Run, f64, [f64; 3], f64) {
     (res.into_iter().map(|r| r.0).collect(), ms, scanned, reranked)
 }
 
+/// Per config: R@10 against the exact top-10 of the rows live now, single-thread p50 and p99 (ms),
+/// mean vectors scanned.
+fn live_eval(live: &Live, qs: &Queries, gt: &Truth, cfgs: &[(String, Params)]) -> Vec<[f64; 4]> {
+    cfgs.iter()
+        .map(|(_, p)| {
+            let recall = mean((0..qs.len()).into_par_iter().map_init(Scratch::new, |s, i| {
+                let got: Vec<u32> = live.search(qs.q768(i), qs.q256(i), p, s, &mut Timing::default()).into_iter().map(|x| x.1).collect();
+                let truth: Vec<u32> = gt.get(i).iter().copied().filter(|&e| live.current(e).is_some()).take(10).collect();
+                recall_at(10, &got, &truth)
+            }).collect::<Vec<_>>());
+            let (mut s, mut t) = (Scratch::new(), Timing::default());
+            let mut ms: Vec<f64> = (0..qs.len())
+                .map(|i| {
+                    let t0 = Instant::now();
+                    std::hint::black_box(live.search(qs.q768(i), qs.q256(i), p, &mut s, &mut t));
+                    t0.elapsed().as_secs_f64() * 1e3
+                })
+                .collect();
+            ms.sort_unstable_by(f64::total_cmp);
+            [recall, pct(&ms, 0.5), pct(&ms, 0.99), t.scanned as f64 / qs.len() as f64]
+        })
+        .collect()
+}
+
 fn print_table(rows: &[Scored]) {
     let sets: Vec<&str> = EVAL_SETS.iter().map(|s| s.0).collect();
     print!("| run | R@10 vs 768 | R@10 vs 256 |");
@@ -394,6 +435,78 @@ fn main() -> Result<()> {
                     "scanned_p99": r.scanned_tail.map(|t| t[0]), "scanned_max": r.scanned_tail.map(|t| t[1]), "reranked": r.reranked,
                 }))?;
             }
+        }
+        Cmd::Live { configs, frac, batch, wal, compact } => {
+            let gt = Truth::load(&a.ingest, "gt768", qs.len())?;
+            let cfgs: Vec<(String, Params)> = configs.split(',').map(|c| parse_config(c, index.k)).collect::<Result<_>>()?;
+            let step = |name: &str, live: &Live, extra: serde_json::Value| -> Result<()> {
+                for ((label, _), r) in cfgs.iter().zip(live_eval(live, &qs, &gt, &cfgs)) {
+                    eprintln!("{name:>10} | {label}: R@10 {:.4}, p50 {:.2} ms, p99 {:.2} ms, scanned {:.0} | delta rows {}, delta slots {}, deleted {}",
+                        r[0], r[1], r[2], r[3], live.delta().rows(), live.delta().slots(), live.deleted());
+                    log(&a.log, serde_json::json!({
+                        "kind": "live", "step": name, "run": label, "ssd": a.ssd, "rows": corpus.n, "clusters": index.k,
+                        "recall10_768_live": r[0], "p50_ms": r[1], "p99_ms": r[2], "scanned": r[3],
+                        "delta_rows": live.delta().rows(), "delta_slots": live.delta().slots(), "deleted": live.deleted(), "extra": extra,
+                    }))?;
+                }
+                Ok(())
+            };
+            let _ = std::fs::remove_file(&wal);
+            let (mut live, _) = Live::open(&index, &corpus, &a.index, Some(&wal))?;
+            step("baseline", &live, serde_json::json!({}))?;
+
+            // A random `frac` of the corpus, without repeats.
+            let mut rng = Rng::new(17);
+            let mut picked = vec![false; corpus.n];
+            let mut victims = Vec::new();
+            while victims.len() < (corpus.n as f64 * frac) as usize {
+                let id = rng.below(corpus.n);
+                if !std::mem::replace(&mut picked[id], true) {
+                    victims.push(id as u32);
+                }
+            }
+            let t0 = Instant::now();
+            for chunk in victims.chunks(batch) {
+                live.delete(chunk)?;
+            }
+            let del_s = t0.elapsed().as_secs_f64();
+            eprintln!("deleted {} rows in {del_s:.2} s", victims.len());
+            step("deleted", &live, serde_json::json!({ "deleted_rows": victims.len(), "seconds": del_s }))?;
+
+            // Reinsert them under their own ids, from the int8 rows dequantised (the only copy
+            // of the vectors this repo keeps).
+            let t0 = Instant::now();
+            let mut vecs = vec![0f32; batch * DIM];
+            for chunk in victims.chunks(batch) {
+                let v = &mut vecs[..chunk.len() * DIM];
+                v.par_chunks_mut(DIM).zip(chunk.par_iter()).for_each(|(v, &id)| {
+                    corpus.quant.decode(corpus.rerank_row(id), v);
+                    sieve::quant::normalize(v);
+                });
+                live.insert(chunk, v)?;
+            }
+            let ins_s = t0.elapsed().as_secs_f64();
+            let wal_bytes = std::fs::metadata(&wal)?.len();
+            eprintln!("inserted {} rows in {ins_s:.2} s ({:.0} rows/s), log {:.2} GB", victims.len(), victims.len() as f64 / ins_s, wal_bytes as f64 / 1e9);
+            step("reinserted", &live, serde_json::json!({ "inserted_rows": victims.len(), "seconds": ins_s, "rows_per_s": victims.len() as f64 / ins_s, "wal_bytes": wal_bytes, "batch": batch }))?;
+
+            // Restart: a fresh process state rebuilt from the log alone.
+            drop(live);
+            let (mut live, replay) = Live::open(&index, &corpus, &a.index, Some(&wal))?;
+            let replay = replay.unwrap();
+            eprintln!("replayed {} inserts, {} deletes in {:.2} s (torn {} B)", replay.inserts, replay.deletes, replay.seconds, replay.torn);
+            step("replayed", &live, serde_json::json!({ "inserts": replay.inserts, "deletes": replay.deletes, "seconds": replay.seconds, "torn": replay.torn }))?;
+
+            let stats = live.compact(&compact)?;
+            eprintln!("compacted: {} slots kept, {} dropped, {:.1} s", stats.slots, stats.dropped, stats.seconds);
+            live.truncate_wal()?;
+            drop(live);
+            let mut merged = Index::open(&compact)?;
+            if a.ssd {
+                merged.use_postings(&compact, a.cache_mb << 20)?;
+            }
+            let (live, _) = Live::open(&merged, &corpus, &compact, None)?;
+            step("compacted", &live, serde_json::json!({ "slots": stats.slots, "dropped": stats.dropped, "seconds": stats.seconds }))?;
         }
         Cmd::Routing => {
             let gt768 = Truth::load(&a.ingest, "gt768", qs.len())?;
