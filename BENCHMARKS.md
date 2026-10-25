@@ -164,6 +164,34 @@ is 12 threads). **Preliminary**: the M2 ingest was writing to the same SSD, whic
 | 64:500:ssd300, scan while reading | none | 11.8 ms | 18.4 ms | 6.8 ms blocked | 4.1 ms | 27.4 | 86 | 303 MB |
 | 256:500:ssd300:p0.12, scan while reading | none | 7.2 ms | 51 ms | 5.9 ms blocked | 4.8 ms | 21.6 | 101 | 296 MB |
 
+### Scan budget (DESIGN.md D15): bounding margin probing's tail
+Vectors scanned per query, mean / p99 / max, and R@10 (tiered200 in RAM mode, ssd300 in SSD
+mode). Latency is from one session on battery in Low Power Mode; compare rows, not absolute values.
+
+| config | R@10 | scanned mean / p99 / max | warm p50 / p99 |
+|---|---|---|---|
+| fixed 64 probes | 0.9191 | 623k / 880k / 975k | 2.10 / 2.81 ms |
+| fixed 96 probes | 0.9332 | 942k / 1.28M / 1.41M | 2.87 / 3.78 ms |
+| Δ = 0.12, cap 256 | 0.9099 | 491k / 3.01M / 3.30M | 0.97 / 8.20 ms |
+| Δ = 0.16, cap 256 | 0.9385 | 925k / 3.15M / 3.30M | |
+| Δ = 0.12, budget 1M | 0.9016 | 328k / 999k / 1.00M | |
+| **Δ = 0.16, budget 1M** | **0.9244** | 536k / 1.00M / 1.00M | 1.70 / 3.33 ms |
+| Δ = 0.16, budget 1.2M | 0.9275 | 601k / 1.20M / 1.20M | |
+| **Δ = 0.20, budget 1.2M** | **0.9358** | 836k / 1.20M / 1.20M | 3.43 / 3.88 ms |
+
+SSD mode, cold, no cache:
+
+| config | R@10 | p50 | p99 | QPS |
+|---|---|---|---|---|
+| 64:500:ssd300 | 0.9120 | 13.1 ms | 31.5 ms | 90 |
+| Δ = 0.12 | 0.9024 | 6.7 ms | 41.7 ms | 99 |
+| Δ = 0.16, budget 1M | 0.9173 | 11.5 ms | 32.5 ms | 97 |
+| **Δ = 0.16, budget 800k** | **0.9122** | 10.6 ms | **17.7 ms** | 109 |
+
+Δ = 0.20 with 1.2M dominates fixed 96 probes on recall, mean scan and worst-case scan, but its
+warm p50 is higher (3.43 vs 2.87 ms): many of its queries sit at the budget, and 256 small
+probes cost more per slot than 96 large ones.
+
 ### Against FAISS (same slice, same code budget, same rerank)
 `scripts/faiss_baseline.py` (faiss-cpu 1.15.1) indexes the same 256-d prefixes with 4096 IVF
 lists and 32 B codes, then reranks the top 500 against the same 768-d int8 rows, so only the

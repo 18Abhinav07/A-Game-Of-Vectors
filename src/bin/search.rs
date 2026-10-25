@@ -120,8 +120,8 @@ impl Truth {
 
 fn parse_config(s: &str, nclusters: usize) -> Result<(String, Params)> {
     let f: Vec<&str> = s.split(':').collect();
-    let [np, cand, rr, ref opts @ ..] = f[..] else { bail!("config {s}: expected nprobe:cand:rerank[:bM[xW]][:pD]") };
-    let (mut prune, mut margin) = (None, None);
+    let [np, cand, rr, ref opts @ ..] = f[..] else { bail!("config {s}: expected nprobe:cand:rerank[:bM[xW]][:pD][:sN[k]]") };
+    let (mut prune, mut margin, mut budget) = (None, None, None);
     for o in opts {
         match o.split_at(1) {
             ("b", v) => {
@@ -129,7 +129,11 @@ fn parse_config(s: &str, nclusters: usize) -> Result<(String, Params)> {
                 prune = Some((m.parse().context("bM")?, w.parse().context("bMxW")?));
             }
             ("p", v) => margin = Some(v.parse().context("pD")?),
-            _ => bail!("config option {o}: expected bM[xW] or pD"),
+            ("s", v) => {
+                let (n, mul) = v.strip_suffix('k').map_or((v, 1), |n| (n, 1000));
+                budget = Some(n.parse::<usize>().context("sN")? * mul);
+            }
+            _ => bail!("config option {o}: expected bM[xW], pD or sN[k]"),
         }
     }
     let nprobe = if np == "all" { nclusters } else { np.parse()? };
@@ -148,7 +152,10 @@ fn parse_config(s: &str, nclusters: usize) -> Result<(String, Params)> {
     if let Some(d) = margin {
         label += &format!(", probe margin {d}");
     }
-    Ok((label, Params { nprobe, cand: cand.parse()?, rerank, k: 100, prune, margin }))
+    if let Some(b) = budget {
+        label += &format!(", scan budget {b}");
+    }
+    Ok((label, Params { nprobe, cand: cand.parse()?, rerank, k: 100, prune, margin, budget }))
 }
 
 /// One ranked list of corpus rows per query.
@@ -161,6 +168,8 @@ struct Scored {
     ndcg: Vec<(String, f64)>,
     ms_per_query: Option<f64>,
     scanned: Option<f64>,
+    /// p99 and max of the vectors scanned by one query.
+    scanned_tail: Option<[f64; 2]>,
     reranked: Option<f64>,
 }
 
@@ -177,7 +186,7 @@ fn score(label: &str, run: &Run, qs: &Queries, gt768: &Truth, gt256: &Truth, cor
             (set.to_string(), mean(per_query))
         })
         .collect();
-    Scored { label: label.into(), recall768, recall256, ndcg, ms_per_query: None, scanned: None, reranked: None }
+    Scored { label: label.into(), recall768, recall256, ndcg, ms_per_query: None, scanned: None, scanned_tail: None, reranked: None }
 }
 
 fn flat_hamming_rerank(corpus: &Corpus, qs: &Queries, cand: usize) -> Run {
@@ -201,8 +210,9 @@ fn flat_hamming_rerank(corpus: &Corpus, qs: &Queries, cand: usize) -> Run {
         .collect()
 }
 
-/// Returns the run, inverse throughput (ms) and mean vectors scanned and reranked per query.
-fn ivf_run(index: &Index, corpus: &Corpus, qs: &Queries, p: &Params) -> (Run, f64, f64, f64) {
+/// Returns the run, inverse throughput (ms), vectors scanned per query (mean, p99, max) and mean
+/// reranked per query.
+fn ivf_run(index: &Index, corpus: &Corpus, qs: &Queries, p: &Params) -> (Run, f64, [f64; 3], f64) {
     let t0 = Instant::now();
     let res: Vec<(Vec<u32>, u64, u64)> = (0..qs.len())
         .into_par_iter()
@@ -213,7 +223,9 @@ fn ivf_run(index: &Index, corpus: &Corpus, qs: &Queries, p: &Params) -> (Run, f6
         })
         .collect();
     let wall = t0.elapsed().as_secs_f64();
-    let scanned = mean(res.iter().map(|r| r.1 as f64));
+    let mut per_query: Vec<f64> = res.iter().map(|r| r.1 as f64).collect();
+    per_query.sort_unstable_by(f64::total_cmp);
+    let scanned = [mean(per_query.iter().copied()), pct(&per_query, 0.99), pct(&per_query, 1.0)];
     let reranked = mean(res.iter().map(|r| r.2 as f64));
     // Wall time across threads, so this is inverse throughput, not latency.
     let ms = wall * 1e3 / qs.len() as f64;
@@ -303,9 +315,10 @@ fn main() -> Result<()> {
                 let (run, ms, scanned, reranked) = ivf_run(&index, &corpus, &qs, &p);
                 let mut s = score(&label, &run, &qs, &gt768, &gt256, &corpus, &qrels);
                 s.ms_per_query = Some(ms);
-                s.scanned = Some(scanned);
+                s.scanned = Some(scanned[0]);
+                s.scanned_tail = Some([scanned[1], scanned[2]]);
                 s.reranked = Some(reranked);
-                eprintln!("{label}: R@10 {:.4}, {reranked:.0} reranked", s.recall768);
+                eprintln!("{label}: R@10 {:.4}, scanned mean {:.0} p99 {:.0} max {:.0}, {reranked:.0} reranked", s.recall768, scanned[0], scanned[1], scanned[2]);
                 rows.push(s);
             }
             print_table(&rows);
@@ -314,7 +327,8 @@ fn main() -> Result<()> {
                     "kind": "eval", "rows": corpus.n, "clusters": index.k, "run": r.label,
                     "recall10_768": r.recall768, "recall10_256": r.recall256,
                     "ndcg10": r.ndcg.iter().cloned().collect::<HashMap<_, _>>(),
-                    "inverse_qps_ms": r.ms_per_query, "scanned": r.scanned, "reranked": r.reranked,
+                    "inverse_qps_ms": r.ms_per_query, "scanned": r.scanned,
+                    "scanned_p99": r.scanned_tail.map(|t| t[0]), "scanned_max": r.scanned_tail.map(|t| t[1]), "reranked": r.reranked,
                 }))?;
             }
         }
