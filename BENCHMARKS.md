@@ -132,8 +132,10 @@ Single-thread latency is measured over all 2,677 queries. QPS is 12 threads for 
 | SOAR 64 probes, full rerank | 1.24 ms | 2.47 ms | 0.068 | 1.00 | 0.26 | 7.6k |
 
 These rows predate two later changes: routing on AMX (sgemm, 65 → 28 µs) and the rerank
-prefetch. The 16-probe p99 includes page faults on rerank rows. They will be re-run on an idle
-machine after the M2 ingest.
+prefetch. The 16-probe p99 includes page faults on rerank rows. A re-run after the M2 ingest
+(`results/m1-lowpower.jsonl`) turned out to be on battery in Low Power Mode: the scan stage at
+64 probes took 1.64 ms against 1.00 ms here, and 12-thread QPS fell 3×. So those numbers are kept
+only as a same-session reference for the FAISS comparison below, and an on-AC re-run is pending.
 
 ### SSD mode (DESIGN.md D13): posting lists on disk
 `index --pack` turns the RaBitQ index into 1.63 GB of 4 KiB-aligned cluster records. RAM holds
@@ -161,6 +163,35 @@ is 12 threads). **Preliminary**: the M2 ingest was writing to the same SSD, whic
 | 256:500:ssd300:p0.12 | none | 7.4 ms | 50 ms | | | 21.6 | 84 | |
 | 64:500:ssd300, scan while reading | none | 11.8 ms | 18.4 ms | 6.8 ms blocked | 4.1 ms | 27.4 | 86 | 303 MB |
 | 256:500:ssd300:p0.12, scan while reading | none | 7.2 ms | 51 ms | 5.9 ms blocked | 4.8 ms | 21.6 | 101 | 296 MB |
+
+### Against FAISS (same slice, same code budget, same rerank)
+`scripts/faiss_baseline.py` (faiss-cpu 1.15.1) indexes the same 256-d prefixes with 4096 IVF
+lists and 32 B codes, then reranks the top 500 against the same 768-d int8 rows, so only the
+index and the code differ. R@10 is against exact 768-d search. Latency is single-threaded, one
+query at a time, and covers FAISS's **code scan only**. sieve's numbers include routing and the
+rerank. Both were measured in the same session, on battery in Low Power Mode, so compare the
+ratios, not the absolute values.
+
+| index | probes | R@10 | p50 | 12-thread QPS |
+|---|---|---|---|---|
+| FAISS IVF4096,PQ32 | 64 / 128 | 0.861 / 0.893 | 2.96 / 5.79 ms | 2.3k / 1.1k (scan) |
+| FAISS IVF4096,PQ64x4fs (fast-scan) | 64 / 128 | 0.852 / 0.883 | 0.88 / 1.54 ms | 11.7k / 6.9k (scan) |
+| FAISS IVF4096,RaBitQ (40 B) | 64 / 128 | 0.868 / 0.903 | 4.36 / 8.66 ms | 1.4k / 0.7k (scan) |
+| **sieve** SOAR + RaBitQ, 500 cand, full rerank | 16 / 32 | 0.846 / **0.888** | 0.34 / **0.63 ms** | 22k / 6.1k (end to end) |
+| **sieve** + 2-bit tier → 200 rows | 64 | **0.919** | 2.10 ms | 1.8k |
+
+- **At equal recall, sieve is 2.4× faster than FAISS's fastest IVF code.** For 0.883–0.888,
+  FAISS fast-scan needs 128 probes and 1.54 ms just to scan, against 0.63 ms end to end for sieve
+  at 32 probes. FAISS's own `IVF,RaBitQ` needs about 100 probes and ~7 ms. sieve evaluates the same
+  estimator through the 32-document `vqtbl1q_u8` LUT kernel.
+- **The gain is mostly SOAR.** sieve stores each vector twice, so 32 of its probes scan about as
+  many slots as 64 FAISS probes. At that roughly equal scan, R@10 is 0.888 against 0.868 for
+  FAISS RaBitQ and 0.852 for fast-scan PQ. The price is 2× the code memory: 1.18 GB against
+  588 MB of PQ codes.
+- **No FAISS IVF index here reaches sieve's 0.919** below 128 probes. FAISS RaBitQ reaches 0.903 at
+  128 probes and 8.7 ms of scan.
+- Build: FAISS trains and adds in 2.5–3.8 min (12 threads). sieve's `index` takes 1.7 min,
+  including SOAR and the 2-bit tier (`results/faiss-m1.jsonl`).
 
 ### Kernels (`cargo run --release --example kernel`, `--example ssd`)
 - 1-bit LUT scan (`vqtbl1q_u8`, 64 tables × 16 entries, u16 accumulators): ~950M codes/s per
