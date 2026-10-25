@@ -325,6 +325,58 @@ The built index stays immutable; updates sit beside it and the query path reads 
   distribution the centroids were trained on. Concurrency is one writer at a time behind an
   `RwLock`; there is no MVCC snapshot for long scans. (`results/m1-live.jsonl`)
 
+### D18. Filters and hybrid search: an allowlist planner, BM25 with weighted fusion
+**Filters** (`src/filter.rs`). A filter is a bitset of allowed rows, passed to the scan through
+the same `View` as the D17 tombstones, so a disallowed slot is skipped at admission and never
+takes a candidate place. The test filter is a domain allowlist (Exa's `includeDomains`): hosts
+are parsed from each passage's URL (385,712 hosts in M1), put in a fixed pseudo-random order,
+and taken in that order until they hold the target fraction of rows. Whole domains are allowed,
+not random rows, so allowed rows cluster by topic the way real ones do. Recall is against the
+exact filtered top-10 under the same int8 scores the rerank uses (`filter::truth`: one batched
+pass over the allowed rows per filter).
+- **Post-filter** (the unfiltered probes, disallowed slots skipped) holds at high selectivity
+  (R@10 0.922 at 100%, 0.911 at 50%) and degrades below it: 0.887 at 10%, 0.778 at 1%. At a
+  fixed 64 probes, a 1% filter leaves about 1% of the scanned slots eligible.
+- **Expanding probe**: clusters are taken in centroid order until a target count of *allowed*
+  slots is covered, from per-cluster allowed counts computed once per filter. At 10% it beats
+  post (0.937 at 200k allowed slots, 6.2 ms). At 1% and below it has to walk most of the index
+  (1,588 to 3,322 probes, 46 to 93 ms), because the allowed rows sit in few clusters that are
+  often far from the query.
+- **Brute force**: below a few hundred thousand allowed rows, scoring every allowed int8 row
+  is exact and cheaper than any index plan: 3.2 ms for 184k rows (1%), 0.34 ms for 18k (0.1%).
+- **Planner** (`Plan::Auto`): brute force at or below 250k allowed rows, post-filter at or above
+  30% of the corpus, an expanding probe to 200k allowed slots between. Across 100% to 0.1%, its
+  filtered R@10 never drops below 0.911 and p50 never exceeds 6.2 ms (single-thread, Low Power
+  Mode). The thresholds are M1's; the brute-force bound scales with row cost, not corpus size,
+  while the post threshold depends on how many allowed slots the default probes reach.
+- Not built: filters on fields other than host, a per-cluster filter index (bitmaps or ACORN-style
+  graph links) for the 1 to 10% band, and selectivity estimation for predicates whose row count is
+  not known up front. Here the allowed set is materialised once per filter, which is right
+  for a fixed allowlist and wrong for per-query predicates.
+
+**BM25** (`src/bm25.rs`, `bin/bm25`). An inverted index over the passage segment text (no title
+or headings), built in one pass over the 10 gzipped JSONL files, which list passages in corpus
+row order; every one of the 18,380,565 rows matched. Terms are hash-sharded across threads, each
+appending (row delta, tf) varints to its own posting lists without locks. The term table is
+sorted and looked up by binary search, so nothing is rebuilt on open. Tokenizer: lower-cased
+alphanumeric runs, Lucene's stop set, Harman's S-stemmer. k1 0.9, b 0.4 (Anserini's MS MARCO
+defaults). Build: 137 s, 7.5 GB peak, 6.32M terms, 1.54B postings, 3.3 GB on disk. Scoring is
+term-at-a-time into a dense accumulator: 6.6M postings decoded per query, p50 24.5 ms, p99 124
+ms. That is ten times the vector path; MaxScore or WAND would cut it and are not built.
+
+**Fusion**. Reciprocal rank fusion (k 60, top 100 of each list), with a weight on the BM25
+list's terms. nDCG@10 on the M1 slice, exact dense / BM25 / fused:
+- BM25 alone is far behind the dense model: 0.422 vs 0.566 on DL21, 0.193 vs 0.314 on DL22.
+- **Equal-weight RRF hurts**: DL21 0.566 → 0.536, dev 0.242 → 0.224. Fusing a much weaker
+  list at equal weight pulls its errors into the top 10.
+- **Down-weighted BM25 helps a little**: at weight 0.2 to 0.3, DL23 rises 0.255 → 0.269
+  (+1.4 pt) and DL22 0.314 → 0.317, while DL21 and dev stay level. With the IVF list in place
+  of exact search, the same pattern holds (DL23 0.251 → 0.265 at weight 0.3).
+- So on this corpus, with a strong embedding model, lexical fusion is a small gain on some query
+  sets, not a default; its weight has to be tuned, and its latency is the larger cost. Exa's
+  own product exposes keyword and neural search as separate modes, which fits this result.
+  (`results/m1-hybrid.jsonl`, `results/m1-filter.jsonl`)
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.

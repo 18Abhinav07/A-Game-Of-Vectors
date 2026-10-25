@@ -14,6 +14,8 @@ use std::time::Instant;
 use sieve::data::{EVAL_SETS, Qrels, read_qrels};
 use sieve::eval::{mean, ndcg10, recall_at};
 use sieve::ivf::{Corpus, Index, Params, Rerank, Rng, Scratch, Timing};
+use sieve::bm25::{Acc, Bm25, rrf};
+use sieve::filter::{self, Filter, Plan};
 use sieve::live::Live;
 use sieve::lut::hamming;
 use sieve::quant::{dot_i8, sign_code};
@@ -78,6 +80,37 @@ enum Cmd {
         /// Where compaction writes the merged index.
         #[arg(long, default_value = "data/index-live")]
         compact: PathBuf,
+    },
+    /// BM25, vector and fused rankings, nDCG@10 per query set (DESIGN.md D18).
+    Hybrid {
+        #[arg(long, default_value = "data/bm25")]
+        bm25: PathBuf,
+        #[arg(long, default_value = "64:500:tiered200")]
+        config: String,
+        /// Depth of each list fed to reciprocal rank fusion, and its k.
+        #[arg(long, default_value_t = 100)]
+        depth: usize,
+        #[arg(long, default_value_t = 60.0)]
+        rrf_k: f32,
+        /// Weights on the BM25 list's RRF terms (the vector list has weight 1).
+        #[arg(long, default_value = "1,0.5,0.25")]
+        weights: String,
+    },
+    /// Domain-allowlist filters across selectivities: recall against the exact filtered top-10
+    /// and latency for each plan (DESIGN.md D18).
+    Filter {
+        #[arg(long, default_value = "data/bm25")]
+        bm25: PathBuf,
+        #[arg(long, default_value = "64:500:full")]
+        config: String,
+        #[arg(long, default_value = "1,0.5,0.1,0.01,0.001")]
+        selectivity: String,
+        /// Allowed-slot targets for the expanding plan.
+        #[arg(long, default_value = "20000,60000,200000")]
+        expand: String,
+        /// Every n-th query is evaluated (the filtered truth is a brute-force pass per filter).
+        #[arg(long, default_value_t = 4)]
+        stride: usize,
     },
     Bench {
         #[arg(long, default_value = "32:1000:full")]
@@ -507,6 +540,116 @@ fn main() -> Result<()> {
             }
             let (live, _) = Live::open(&merged, &corpus, &compact, None)?;
             step("compacted", &live, serde_json::json!({ "slots": stats.slots, "dropped": stats.dropped, "seconds": stats.seconds }))?;
+        }
+        Cmd::Hybrid { bm25, config, depth, rrf_k, weights } => {
+            let gt768 = Truth::load(&a.ingest, "gt768", qs.len())?;
+            let gt256 = Truth::load(&a.ingest, "gt256", qs.len())?;
+            let mut qrels = HashMap::new();
+            for (set, _, file, _) in EVAL_SETS {
+                qrels.insert(set.to_string(), read_qrels(&a.qrels.join(file))?);
+            }
+            let text: Vec<String> = std::fs::read_to_string(a.ingest.join("queries.tsv"))?.lines().map(|l| l.splitn(3, '\t').nth(2).unwrap_or("").to_owned()).collect();
+            let bm = Bm25::open(&bm25)?;
+            anyhow::ensure!(bm.n == corpus.n, "bm25 index has {} rows, corpus {}", bm.n, corpus.n);
+            let (_, p) = parse_config(&config, index.k)?;
+            // One accumulator per rayon thread: each is a dense array over the corpus.
+            let accs: Vec<std::sync::Mutex<Acc>> = (0..rayon::current_num_threads()).map(|_| Default::default()).collect();
+            let lex: Run = (0..qs.len()).into_par_iter().map(|i| {
+                let mut acc = accs[rayon::current_thread_index().unwrap()].lock().unwrap();
+                bm.search(&text[i], 1000, &mut acc).0.into_iter().map(|x| x.1).collect()
+            }).collect();
+            let (vec_run, ..) = ivf_run(&engine, &qs, &p);
+            let exact: Run = (0..qs.len()).map(|i| gt768.get(i).to_vec()).collect();
+            let weights: Vec<f32> = weights.split(',').map(|x| x.parse()).collect::<Result<_, _>>()?;
+            let fuse = |a: &Run, b: &Run, w: f32| -> Run { (0..qs.len()).map(|i| rrf(&[(&a[i][..depth.min(a[i].len())], w), (&b[i][..depth.min(b[i].len())], 1.0)], rrf_k, 100)).collect() };
+            // Single-thread latency of the lexical leg alone.
+            let mut acc = Acc::default();
+            let mut ms = Vec::new();
+            let mut decoded = 0u64;
+            for i in 0..qs.len() {
+                let t0 = Instant::now();
+                decoded += bm.search(&text[i], 1000, &mut acc).1;
+                ms.push(t0.elapsed().as_secs_f64() * 1e3);
+            }
+            ms.sort_unstable_by(f64::total_cmp);
+            eprintln!("bm25: p50 {:.2} ms, p99 {:.2} ms, {:.0} postings per query", pct(&ms, 0.5), pct(&ms, 0.99), decoded as f64 / qs.len() as f64);
+            let mut rows = vec![
+                score("bm25 (k1 0.9, b 0.4)", &lex, &qs, &gt768, &gt256, &corpus, &qrels),
+                score("flat f32 768-d (exact)", &exact, &qs, &gt768, &gt256, &corpus, &qrels),
+                score(&format!("ivf {config}"), &vec_run, &qs, &gt768, &gt256, &corpus, &qrels),
+            ];
+            for &w in &weights {
+                rows.push(score(&format!("rrf(bm25 x{w}, exact), depth {depth}"), &fuse(&lex, &exact, w), &qs, &gt768, &gt256, &corpus, &qrels));
+                rows.push(score(&format!("rrf(bm25 x{w}, ivf {config}), depth {depth}"), &fuse(&lex, &vec_run, w), &qs, &gt768, &gt256, &corpus, &qrels));
+            }
+            print_table(&rows);
+            for r in &rows {
+                log(&a.log, serde_json::json!({
+                    "kind": "hybrid", "rows": corpus.n, "run": r.label, "recall10_768": r.recall768,
+                    "ndcg10": r.ndcg.iter().cloned().collect::<HashMap<_, _>>(), "rrf_k": rrf_k, "depth": depth,
+                    "bm25_p50_ms": pct(&ms, 0.5), "bm25_p99_ms": pct(&ms, 0.99), "bm25_postings_per_query": decoded as f64 / qs.len() as f64,
+                }))?;
+            }
+        }
+        Cmd::Filter { bm25, config, selectivity, expand, stride } => {
+            let (_, p) = parse_config(&config, index.k)?;
+            let p = Params { k: 10, ..p };
+            let host: Vec<u32> = read_vec(&bm25.join("host.u32"))?;
+            let nhosts = host.iter().copied().max().map_or(0, |m| m as usize + 1);
+            let mut host_rows = vec![0usize; nhosts];
+            host.iter().for_each(|&h| host_rows[h as usize] += 1);
+            // Hosts in a fixed pseudo-random order; a filter of selectivity s allows the first
+            // hosts in that order until they hold s of the rows. Whole domains, as an
+            // includeDomains list would, so allowed rows cluster by topic the way real ones do.
+            let mut order: Vec<u32> = (0..nhosts as u32).collect();
+            order.sort_unstable_by_key(|&h| (h as u64).wrapping_mul(0x9E3779B97F4A7C15).rotate_left(17));
+            let sample: Vec<usize> = (0..qs.len()).step_by(stride).collect();
+            let qv: Vec<&[f32]> = sample.iter().map(|&i| qs.q768(i)).collect();
+            let targets: Vec<usize> = expand.split(',').map(|x| x.parse()).collect::<Result<_, _>>()?;
+            for sel in selectivity.split(',').map(|x| x.parse::<f64>()).collect::<Result<Vec<_>, _>>()? {
+                let mut allowed_host = vec![false; nhosts];
+                let (mut rows, want) = (0usize, (sel * corpus.n as f64) as usize);
+                for &h in &order {
+                    if rows >= want {
+                        break;
+                    }
+                    allowed_host[h as usize] = true;
+                    rows += host_rows[h as usize];
+                }
+                let mut allow = vec![0u64; corpus.n.div_ceil(64)];
+                host.iter().enumerate().filter(|x| allowed_host[*x.1 as usize]).for_each(|(r, _)| allow[r >> 6] |= 1 << (r & 63));
+                let f = Filter::new(allow, &index);
+                let t0 = Instant::now();
+                let truth = filter::truth(&corpus, &f, &qv, 10);
+                eprintln!("selectivity {sel}: {} rows from {} hosts, truth in {:.1} s", f.rows.len(), allowed_host.iter().filter(|&&x| x).count(), t0.elapsed().as_secs_f64());
+                let mut plans = vec![("post".to_string(), Plan::Post)];
+                plans.extend(targets.iter().map(|&t| (format!("expand {t}"), Plan::Expand(t))));
+                if f.rows.len() <= 2_000_000 {
+                    plans.push(("brute".into(), Plan::Brute));
+                }
+                plans.push((format!("auto ({:?})", Plan::Auto.resolve(&f, corpus.n)), Plan::Auto));
+                for (name, plan) in plans {
+                    let recall = mean(sample.par_iter().zip(&truth).map_init(Scratch::new, |s, (&i, tr)| {
+                        let got: Vec<u32> = filter::search(&index, &corpus, &f, plan, qs.q768(i), qs.q256(i), &p, s, &mut Timing::default()).into_iter().map(|x| x.1).collect();
+                        recall_at(10, &got, tr)
+                    }).collect::<Vec<_>>());
+                    let (mut s, mut t) = (Scratch::new(), Timing::default());
+                    let mut ms: Vec<f64> = sample.iter().map(|&i| {
+                        let t0 = Instant::now();
+                        std::hint::black_box(filter::search(&index, &corpus, &f, plan, qs.q768(i), qs.q256(i), &p, &mut s, &mut t));
+                        t0.elapsed().as_secs_f64() * 1e3
+                    }).collect();
+                    ms.sort_unstable_by(f64::total_cmp);
+                    let nq = sample.len() as f64;
+                    eprintln!("  {name:>13}: R@10 {recall:.4}, p50 {:.2} ms, p99 {:.2} ms, probed {:.0}, scanned {:.0}, reranked {:.0}",
+                        pct(&ms, 0.5), pct(&ms, 0.99), t.probed as f64 / nq, t.scanned as f64 / nq, t.reranked as f64 / nq);
+                    log(&a.log, serde_json::json!({
+                        "kind": "filter", "rows": corpus.n, "config": config, "selectivity": sel, "allowed_rows": f.rows.len(), "plan": name,
+                        "recall10_filtered_int8": recall, "p50_ms": pct(&ms, 0.5), "p99_ms": pct(&ms, 0.99),
+                        "probed": t.probed as f64 / nq, "scanned": t.scanned as f64 / nq, "reranked": t.reranked as f64 / nq, "queries": sample.len(),
+                    }))?;
+                }
+            }
         }
         Cmd::Routing => {
             let gt768 = Truth::load(&a.ingest, "gt768", qs.len())?;

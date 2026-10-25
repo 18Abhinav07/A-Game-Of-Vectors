@@ -41,6 +41,11 @@ and fixes that.
   layout, a write-ahead log, and compaction into a new index. Delete 10% of M1 and reinsert it:
   R@10 0.9192 before, after reinsertion, after a restart from the log, and after compaction.
   Inserts run at 100k rows/s.
+- **Filters and hybrid search**: domain-allowlist filters with a planner (post-filter, an
+  expanding probe, or exact brute force over the allowed rows) that holds filtered R@10 at or
+  above 0.911 from 100% down to 0.1% selectivity. A BM25 index over all 18.4M passages, and
+  weighted reciprocal rank fusion: equal-weight fusion lowers nDCG@10 (DL21 0.566 → 0.536),
+  and a BM25 weight of 0.2 to 0.3 gains up to 1.4 pt (DL23).
 - **Measured against FAISS** (IVF-PQ, fast-scan PQ, IVF-RaBitQ) at the same code budget.
 - **Integer rerank** on `sdot` (int8 query × int8 row) and centroid routing on AMX via
   Accelerate.
@@ -103,7 +108,9 @@ What a real service would still need, roughly in order:
   replica or hedged requests, and shards map the full files instead of their own split.
 - **Cluster maintenance under drift**: live updates exist (D17), but centroids are fixed at
   build time. Data that drifts away from them needs SPFresh-style split and re-centering.
-- **Filters and hybrid search**: metadata predicates during the scan, plus BM25 fusion.
+- **Filters and lexical search**: host allowlists and BM25 fusion exist (D18), but filters on
+  other fields, a filter-aware index for the 1 to 10% band, and WAND/MaxScore pruning (BM25 is
+  24 ms p50 by exhaustive TAAT) do not.
 - **I/O**: macOS has no io_uring, so queue depth comes from threads blocked in `pread`. On Linux,
   io_uring with registered buffers would remove the thread pool.
 - **Observability**: per-stage histograms, cache and I/O metrics exported, not just bench JSON.
@@ -118,7 +125,8 @@ cargo test --release
 ```
 Binaries: `ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
 `search [--ssd --cache-mb N] [--shards host:port,... [--two-phase]] eval | routing | bench [--cold]`,
-`search live` (delete, reinsert, replay, compact), `shard --shard i --of n --listen host:port [--ssd]`. Config strings are
+`search live` (delete, reinsert, replay, compact), `bm25` (inverted index from the passage text),
+`search hybrid | filter`, `shard --shard i --of n --listen host:port [--ssd]`. Config strings are
 `nprobe:cand:rerank[:bM[xW]][:pΔ][:sN[k]]`, with rerank one of `none | prefix | full | tieredN | ssdN`.
 
 ## Layout
@@ -130,6 +138,8 @@ src/tier2.rs   2-bit Lloyd-Max middle tier with per-byte score tables
 src/ivf.rs     k-means, SOAR assignment, index build, search, SSD row reader
 src/postings.rs  SSD posting lists, CLOCK cluster cache
 src/live.rs    tombstones, delta lists, write-ahead log, compaction
+src/bm25.rs    tokenizer, inverted index build, TAAT BM25, weighted RRF
+src/filter.rs  allowlist filters: post, expanding probe, brute force, planner
 src/shard.rs   cluster→shard assignment, wire protocol, shard server, coordinator client
 src/store.rs   mmap, page eviction/residency, blocking I/O pool
 src/blas.rs    Accelerate sgemm (AMX)

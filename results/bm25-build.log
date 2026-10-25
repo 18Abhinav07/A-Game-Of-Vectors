@@ -1,0 +1,29 @@
+data/raw/text/msmarco_v2.1_doc_segmented_00.json.gz: matched 1760180/18380565 rows, 0 skipped, 14 s
+data/raw/text/msmarco_v2.1_doc_segmented_01.json.gz: matched 3750897/18380565 rows, 0 skipped, 28 s
+data/raw/text/msmarco_v2.1_doc_segmented_02.json.gz: matched 5649026/18380565 rows, 0 skipped, 42 s
+data/raw/text/msmarco_v2.1_doc_segmented_03.json.gz: matched 7634479/18380565 rows, 0 skipped, 55 s
+data/raw/text/msmarco_v2.1_doc_segmented_04.json.gz: matched 9511868/18380565 rows, 0 skipped, 68 s
+data/raw/text/msmarco_v2.1_doc_segmented_05.json.gz: matched 11376563/18380565 rows, 0 skipped, 82 s
+data/raw/text/msmarco_v2.1_doc_segmented_06.json.gz: matched 13101032/18380565 rows, 0 skipped, 95 s
+data/raw/text/msmarco_v2.1_doc_segmented_07.json.gz: matched 14799413/18380565 rows, 0 skipped, 107 s
+data/raw/text/msmarco_v2.1_doc_segmented_08.json.gz: matched 16550603/18380565 rows, 0 skipped, 121 s
+data/raw/text/msmarco_v2.1_doc_segmented_09.json.gz: matched 18380565/18380565 rows, 0 skipped, 134 s
+{"b":0.4000000059604645,"k1":0.8999999761581421,"posting_bytes":3327644066,"postings":1536253939,"rows":18380565,"seconds":136.969143542,"skipped_passages":0,"terms":6322258}
+      140.77 real      1119.14 user         9.88 sys
+         10371842048  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              705254  page reclaims
+               56443  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 823  voluntary context switches
+              278397  involuntary context switches
+       6013640879876  instructions retired
+       2685302493569  cycles elapsed
+          7508157320  peak memory footprint

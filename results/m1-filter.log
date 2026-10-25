@@ -1,0 +1,33 @@
+18380565 rows, 4096 clusters, 2677 queries
+selectivity 1: 18380565 rows from 385713 hosts, truth in 33.1 s
+           post: R@10 0.9222, p50 1.66 ms, p99 2.29 ms, probed 64, scanned 629545, reranked 416
+   expand 20000: R@10 0.6622, p50 0.26 ms, p99 0.33 ms, probed 3, scanned 25559, reranked 475
+   expand 60000: R@10 0.7737, p50 0.38 ms, p99 0.43 ms, probed 7, scanned 65544, reranked 451
+  expand 200000: R@10 0.8615, p50 0.74 ms, p99 0.83 ms, probed 22, scanned 206064, reranked 431
+    auto (Post): R@10 0.9222, p50 1.68 ms, p99 2.54 ms, probed 64, scanned 629545, reranked 416
+selectivity 0.5: 9190342 rows from 205897 hosts, truth in 16.3 s
+           post: R@10 0.9110, p50 1.78 ms, p99 2.70 ms, probed 64, scanned 629545, reranked 418
+   expand 20000: R@10 0.7167, p50 0.35 ms, p99 0.57 ms, probed 5, scanned 46744, reranked 462
+   expand 60000: R@10 0.8169, p50 0.59 ms, p99 1.07 ms, probed 14, scanned 130974, reranked 441
+  expand 200000: R@10 0.8918, p50 1.35 ms, p99 2.29 ms, probed 45, scanned 434077, reranked 423
+    auto (Post): R@10 0.9110, p50 1.77 ms, p99 2.53 ms, probed 64, scanned 629545, reranked 418
+selectivity 0.1: 2073361 rows from 35652 hosts, truth in 3.7 s
+           post: R@10 0.8867, p50 2.03 ms, p99 3.32 ms, probed 64, scanned 629545, reranked 426
+   expand 20000: R@10 0.8037, p50 1.03 ms, p99 1.96 ms, probed 24, scanned 227798, reranked 442
+   expand 60000: R@10 0.8760, p50 2.31 ms, p99 3.55 ms, probed 67, scanned 650983, reranked 427
+  expand 200000: R@10 0.9366, p50 6.18 ms, p99 8.16 ms, probed 208, scanned 2019973, reranked 417
+  auto (Expand(200000)): R@10 0.9366, p50 6.19 ms, p99 8.19 ms, probed 208, scanned 2019973, reranked 417
+selectivity 0.01: 183811 rows from 1389 hosts, truth in 0.3 s
+           post: R@10 0.7776, p50 2.97 ms, p99 4.77 ms, probed 64, scanned 629545, reranked 451
+   expand 20000: R@10 0.8775, p50 15.32 ms, p99 29.74 ms, probed 371, scanned 3635170, reranked 432
+   expand 60000: R@10 0.9213, p50 23.66 ms, p99 50.14 ms, probed 706, scanned 6700003, reranked 429
+  expand 200000: R@10 0.9499, p50 46.69 ms, p99 78.37 ms, probed 1588, scanned 14531179, reranked 427
+          brute: R@10 0.9999, p50 3.21 ms, p99 4.83 ms, probed 0, scanned 0, reranked 183811
+   auto (Brute): R@10 0.9999, p50 3.21 ms, p99 3.40 ms, probed 0, scanned 0, reranked 183811
+selectivity 0.001: 18390 rows from 659 hosts, truth in 0.2 s
+           post: R@10 0.7712, p50 1.99 ms, p99 2.87 ms, probed 64, scanned 629545, reranked 417
+   expand 20000: R@10 0.9879, p50 56.62 ms, p99 63.68 ms, probed 1788, scanned 16653068, reranked 392
+   expand 60000: R@10 0.9888, p50 93.46 ms, p99 101.12 ms, probed 3322, scanned 30697024, reranked 393
+  expand 200000: R@10 0.9888, p50 93.40 ms, p99 101.00 ms, probed 3322, scanned 30697024, reranked 393
+          brute: R@10 0.9987, p50 0.33 ms, p99 0.38 ms, probed 0, scanned 0, reranked 18390
+   auto (Brute): R@10 0.9987, p50 0.34 ms, p99 0.39 ms, probed 0, scanned 0, reranked 18390
