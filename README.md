@@ -3,7 +3,8 @@
 A Rust vector search engine that reproduces, measures and extends the design Exa published in
 [How we built a web-scale vector database](https://exa.ai/blog/building-web-scale-vector-db).
 It serves **113.5M passages** (the TREC-RAG 2024 MS MARCO v2.1 corpus, Arctic-Embed-M v1.5)
-on one 24 GB laptop.
+on one 24 GB laptop: R@10 0.909 at 4.8 ms p50 and 460 QPS with the codes in RAM, or R@10 0.902
+at 13 ms in **225 MB of RAM** with everything on SSD.
 
 Exa's post describes the design but publishes no recall or latency numbers. This repo
 measures it against exact search and NIST relevance labels, finds where it loses recall,
@@ -36,7 +37,19 @@ and fixes that.
   the data streams past, and shards are downloaded, consumed and deleted so 350 GB of parquet
   never has to sit on a 512 GB disk.
 
-## Results (M1: 18.4M passages; full 113.5M in progress)
+## Results: full corpus (M2: 113.5M passages, 16384 clusters)
+| | R@10 | nDCG@10 dl21 / dl22 / dl23 | p50 (cold) | QPS | RAM |
+|---|---|---|---|---|---|
+| exact flat 768-d | 1.000 | 0.694 / 0.552 / 0.470 | | | |
+| 64 probes, 2-bit tier → 200 rows from SSD | 0.909 | 0.686 / 0.547 / 0.457 | 4.8 ms | 460 | 14 GB |
+| 128 probes, 1000 cand | 0.937 | 0.693 / 0.551 / 0.460 | 9.3 ms | 308 | 15 GB |
+| SSD mode, 64 probes, top 300 from SSD | 0.902 | 0.684 / 0.546 / 0.454 | 13 ms | 90 | 225 MB |
+| SSD mode + 1 GB cluster cache, margin probing | 0.907 | 0.690 / 0.545 / 0.460 | 7.2 ms | 117 | 3.3 GB |
+
+At 128 probes (1.6% of the corpus scanned) nDCG@10 is within 0.011 of exact search on every
+query set; at 256 probes, within 0.006.
+
+## Results: ablations (M1: 18.4M passages)
 | | R@10 | p50 | QPS (12 threads) |
 |---|---|---|---|
 | plain IVF, 32 probes | 0.815 | | |
@@ -52,14 +65,14 @@ and the evidence for it: [DESIGN.md](DESIGN.md).
 These are projections from measured per-slot sizes, not runs. SSD mode stores 44 B per slot
 (32 B code, two f32 factors, u32 id), and SOAR stores each vector twice.
 
-| | M1 (measured) | 113.5M (M2) | 1B (projected) |
+| | M1 (measured) | M2 (measured) | 1B (projected) |
 |---|---|---|---|
 | clusters | 4,096 | 16,384 | ~131k |
-| posting lists on SSD | 1.63 GB | ~10 GB | ~88 GB |
+| posting lists on SSD | 1.63 GB | 10.03 GB | ~88 GB |
 | int8 rerank rows on SSD | 14 GB | 87 GB | 768 GB |
 | RAM: centroids + offsets | ~4 MB | ~17 MB | ~135 MB |
-| peak RSS, no cache | 287 MB | pending | well under 1 GB |
-| bytes read per query, 64 probes | 27 MB | ~39 MB | ~43 MB |
+| peak RSS, no cache (incl. queries, truth) | 287 MB | 225 MB | well under 1 GB |
+| bytes read per query, 64 probes | 27 MB | 40 MB | ~43 MB |
 
 RAM stops being the limit: it scales with the cluster count, not N. Disk capacity and
 **bandwidth** take its place. At ~40 MB per query, one NVMe drive with ~3–6 GB/s sustains roughly

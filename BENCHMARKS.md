@@ -160,6 +160,111 @@ is 12 threads). **Preliminary**: the M2 ingest was writing to the same SSD, whic
 - SSD, random 768 B `pread` with `F_NOCACHE`: 18.7k/s at QD1 (53 µs), 71.7k/s at QD4,
   176k/s at QD16, 215k/s at QD64.
 
-## M2: 60 shards, 113,520,750 passages, 16384 clusters
+## M2: 60 shards, 113,520,750 passages, 16384 clusters (the full corpus)
 
-Pending: ingest is in progress, streaming each shard off the network and deleting it once read.
+Index: RaBitQ residual codes with SOAR (λ = 1, 2.002 stored per vector) and the 2-bit tier.
+On the full corpus, nDCG@10 is an absolute number, no longer a relative signal.
+
+### Build
+| step | time |
+|---|---|
+| download + ingest, 60 shards (network-bound, shards deleted as read) | 3 h 19 min |
+| of which exact ground truth, 2,677 queries × 113.5M at 768-d and 256-d (sgemm) | 356 s |
+| index: k-means (1M sample, 12 iters), SOAR, RaBitQ, 2-bit tier | 13 min |
+| `index --pack`: 10.03 GB of posting lists | 9 s |
+
+Cluster sizes: p50 13,244, p99 35,635, max 85,003, min 14. The 6× spread between p50 and max
+drives the p99 tail of the scan, and is the case for balanced k-means.
+
+### Routing: fraction of the exact top-10 inside the probed clusters
+| nprobe | % of clusters | reachable |
+|---|---|---|
+| 8 | 0.05% | 0.818 |
+| 16 | 0.10% | 0.865 |
+| 32 | 0.20% | 0.904 |
+| 64 | 0.39% | 0.935 |
+| 128 | 0.78% | 0.957 |
+| 256 | 1.56% | 0.974 |
+| 512 | 3.12% | 0.984 |
+
+With 4× the clusters for 6.2× the data, routing at a given nprobe is about where M1 was
+(0.909 → 0.904 at 32 probes), while 32 probes now cover 0.20% of the clusters instead of 0.78%.
+
+### End to end
+| config | R@10 | nDCG@10 dl21 | dl22 | dl23 | dev | scanned | reranked |
+|---|---|---|---|---|---|---|---|
+| exact flat 768-d | 1.000 | 0.694 | 0.552 | 0.470 | 0.334 | 113.5M | |
+| exact flat 256-d prefix | 0.808 | 0.693 | 0.556 | 0.452 | 0.331 | 113.5M | |
+| 16 probes, 1000 cand, 2-bit tier → 200 | 0.848 | 0.672 | 0.534 | 0.432 | 0.303 | 231k | 870 |
+| 32 probes, 1000 cand, 2-bit tier → 200 | 0.886 | 0.681 | 0.542 | 0.445 | 0.314 | 457k | 851 |
+| 32 probes, 500 cand, 2-bit tier → 200 | 0.879 | 0.680 | 0.541 | 0.442 | 0.314 | 457k | 426 |
+| **64 probes, 500 cand, 2-bit tier → 200** | **0.909** | 0.686 | 0.547 | 0.457 | 0.323 | 913k | 418 |
+| 64 probes, 1000 cand, 2-bit tier → 200 | 0.916 | 0.688 | 0.548 | 0.457 | 0.324 | 913k | 834 |
+| 64 probes, 1000 cand, 2-bit tier → 100 | 0.909 | 0.688 | 0.548 | 0.456 | 0.324 | 913k | 834 |
+| 128 probes, 1000 cand, 2-bit tier → 200 | 0.937 | 0.693 | 0.551 | 0.460 | 0.328 | 1.84M | 821 |
+| 256 probes, 1000 cand, 2-bit tier → 200 | 0.952 | 0.692 | 0.551 | 0.465 | 0.332 | 3.71M | 811 |
+
+At 128 probes (1.6% of the corpus scanned) nDCG@10 is within 0.011 of exact search on every
+query set; at 256 probes, within 0.006.
+
+### Bound-driven rerank and query-aware probing at 113.5M
+| config | R@10 | scanned | reranked |
+|---|---|---|---|
+| 64 probes, 500 cand, 2-bit tier → 200 | 0.9090 | 913k | 418 |
+| same, bound-pruned w = 1.0 | 0.9090 | 913k | 380 |
+| 64 probes, 1000 cand, full rerank, bound-pruned w = 0.8 | 0.9159 | 913k | 487 |
+| Δ = 0.08 (cap 256), 500 cand, 2-bit tier → 200 | 0.8499 | 268k | 455 |
+| Δ = 0.10 | 0.8866 | 487k | 443 |
+| Δ = 0.12 | 0.9100 | 769k | 433 |
+| Δ = 0.14 | 0.9235 | 1.09M | 425 |
+| Δ = 0.16 | 0.9340 | 1.45M | 419 |
+
+Pruning stays lossless at w = 1 (9% fewer rows). At w = 0.8, a full-precision rerank of the
+487 surviving rows matches the 1000-candidate tiered run (0.9159 vs 0.9160). Margin probing still beats fixed nprobe at equal scan: Δ = 0.12 reaches
+the 64-probe recall (0.910) with 16% less scan, and Δ = 0.16 lands between 64 and 128 probes
+at 79% of the 128-probe scan.
+
+### SSD mode at 113.5M
+| config | R@10 |
+|---|---|
+| 64 probes, 500 cand, top 300 by estimate | 0.9021 |
+| 64 probes, 500 cand, top 400 | 0.9078 |
+| 128 probes, 1000 cand, top 400 | 0.9282 |
+| Δ = 0.12 (cap 256), 500 cand, top 400 | 0.9074 |
+
+### Latency and throughput (cold: rerank rows and posting lists come from the SSD)
+Single-thread latency over 2,677 queries; QPS is 12 threads for 10 s. The SSD was idle
+(ingest finished). rerank.i8 is 87 GB, so RAM mode reads the final tier from the SSD regardless.
+
+| config | p50 | p99 | route | scan | 2-bit | rerank | QPS | peak RSS |
+|---|---|---|---|---|---|---|---|---|
+| RAM, 32:500:tiered200 | 4.07 ms | 8.67 ms | 0.09 | 0.91 | 0.34 | 3.24 | 465 | 13.9 GB |
+| RAM, **64:500:tiered200** | 4.82 ms | 7.39 ms | 0.12 | 1.75 | 0.14 | 3.09 | 460 | 14.2 GB |
+| RAM, 64:500:tiered200:b10 | 4.71 ms | 6.68 ms | 0.07 | 1.60 | 0.23 | 3.08 | 488 | 14.0 GB |
+| RAM, 64:1000:tiered200 | 5.79 ms | 17.2 ms | 0.12 | 2.06 | 1.44 | 4.37 | 420 | 15.2 GB |
+| RAM, 128:1000:tiered200 | 9.28 ms | 26.1 ms | 0.14 | 4.48 | 2.97 | 5.91 | 308 | 15.5 GB |
+| RAM, 256:500:tiered200:p0.12 | 3.89 ms | 10.8 ms | 0.11 | 1.37 | 0.15 | 3.08 | 474 | 14.1 GB |
+
+| SSD mode | cache | p50 | p99 | blocked on reads | rerank | MB read/query | QPS | peak RSS |
+|---|---|---|---|---|---|---|---|---|
+| 64:500:ssd300 | none | 13.2 ms | 17.2 ms | 6.7 ms | 3.9 ms | 40.2 | 90 | 225 MB\* |
+| 64:500:ssd300 | 1 GB (hit 0.26) | 11.1 ms | 15.9 ms | 4.2 ms | 3.9 ms | 29.1 | 108 | 3.3 GB |
+| 256:500:ssd400:p0.12 | none | 7.8 ms | 40.7 ms | 5.3 ms | 4.8 ms | 33.8 | 93 | 1.1 GB\* |
+| 256:500:ssd400:p0.12 | 1 GB (hit 0.34) | 7.2 ms | 28.8 ms | 2.7 ms | 4.7 ms | 21.8 | 117 | 3.3 GB |
+
+\* The pipeline run measured 1.1–1.2 GB with no cache. 908 MB of that was two norm arrays that
+SSD mode never reads, loaded eagerly; they are now memory-mapped and the measured peak is
+225 MB (`results/m2-lazy.jsonl`, A/B against the old binary at the same moment: 1,091 → 225 MB).
+Later runs of 64:500:ssd300 measured p50 15.0–16.0 ms with both binaries while a Time Machine
+backup was running, so treat SSD-mode latency as ±2 ms.
+
+What this says:
+- **RAM mode serves the full corpus at R@10 0.909 in 4.8 ms p50 and 460 QPS**, holding 14 GB of
+  codes, ids, factors and the 2-bit tier in RAM and reading 200 int8 rows per query from SSD.
+  Rerank (SSD reads) is 64% of the latency.
+- **SSD mode serves the same corpus at R@10 0.902 in 225 MB** of RAM, 63× less, at 13 ms p50
+  and about 90–117 QPS. At 40 MB per query and ~3.6 GB/s, it is bound by SSD bandwidth.
+- The 1 GB cluster cache (10% of the lists) hits 26% at fixed nprobe and 34% with margin
+  probing, whose probe set concentrates on fewer, hotter clusters.
+- Margin probing gives the best median in both modes (3.89 ms RAM, 7.2 ms SSD) but the worst
+  tail: flat-score queries probe up to the 256 cap, into large clusters.

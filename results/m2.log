@@ -1,0 +1,564 @@
+kmeans iter 0: largest cluster 2033, empty 116
+kmeans iter 1: largest cluster 746, empty 0
+kmeans iter 2: largest cluster 526, empty 0
+kmeans iter 3: largest cluster 428, empty 0
+kmeans iter 4: largest cluster 376, empty 0
+kmeans iter 5: largest cluster 364, empty 0
+kmeans iter 6: largest cluster 355, empty 0
+kmeans iter 7: largest cluster 349, empty 0
+kmeans iter 8: largest cluster 345, empty 0
+kmeans iter 9: largest cluster 343, empty 0
+kmeans iter 10: largest cluster 345, empty 0
+kmeans iter 11: largest cluster 345, empty 0
+assigned 1048576/113520750
+assigned 2097152/113520750
+assigned 3145728/113520750
+assigned 4194304/113520750
+assigned 5242880/113520750
+assigned 6291456/113520750
+assigned 7340032/113520750
+assigned 8388608/113520750
+assigned 9437184/113520750
+assigned 10485760/113520750
+assigned 11534336/113520750
+assigned 12582912/113520750
+assigned 13631488/113520750
+assigned 14680064/113520750
+assigned 15728640/113520750
+assigned 16777216/113520750
+assigned 17825792/113520750
+assigned 18874368/113520750
+assigned 19922944/113520750
+assigned 20971520/113520750
+assigned 22020096/113520750
+assigned 23068672/113520750
+assigned 24117248/113520750
+assigned 25165824/113520750
+assigned 26214400/113520750
+assigned 27262976/113520750
+assigned 28311552/113520750
+assigned 29360128/113520750
+assigned 30408704/113520750
+assigned 31457280/113520750
+assigned 32505856/113520750
+assigned 33554432/113520750
+assigned 34603008/113520750
+assigned 35651584/113520750
+assigned 36700160/113520750
+assigned 37748736/113520750
+assigned 38797312/113520750
+assigned 39845888/113520750
+assigned 40894464/113520750
+assigned 41943040/113520750
+assigned 42991616/113520750
+assigned 44040192/113520750
+assigned 45088768/113520750
+assigned 46137344/113520750
+assigned 47185920/113520750
+assigned 48234496/113520750
+assigned 49283072/113520750
+assigned 50331648/113520750
+assigned 51380224/113520750
+assigned 52428800/113520750
+assigned 53477376/113520750
+assigned 54525952/113520750
+assigned 55574528/113520750
+assigned 56623104/113520750
+assigned 57671680/113520750
+assigned 58720256/113520750
+assigned 59768832/113520750
+assigned 60817408/113520750
+assigned 61865984/113520750
+assigned 62914560/113520750
+assigned 63963136/113520750
+assigned 65011712/113520750
+assigned 66060288/113520750
+assigned 67108864/113520750
+assigned 68157440/113520750
+assigned 69206016/113520750
+assigned 70254592/113520750
+assigned 71303168/113520750
+assigned 72351744/113520750
+assigned 73400320/113520750
+assigned 74448896/113520750
+assigned 75497472/113520750
+assigned 76546048/113520750
+assigned 77594624/113520750
+assigned 78643200/113520750
+assigned 79691776/113520750
+assigned 80740352/113520750
+assigned 81788928/113520750
+assigned 82837504/113520750
+assigned 83886080/113520750
+assigned 84934656/113520750
+assigned 85983232/113520750
+assigned 87031808/113520750
+assigned 88080384/113520750
+assigned 89128960/113520750
+assigned 90177536/113520750
+assigned 91226112/113520750
+assigned 92274688/113520750
+assigned 93323264/113520750
+assigned 94371840/113520750
+assigned 95420416/113520750
+assigned 96468992/113520750
+assigned 97517568/113520750
+assigned 98566144/113520750
+assigned 99614720/113520750
+assigned 100663296/113520750
+assigned 101711872/113520750
+assigned 102760448/113520750
+assigned 103809024/113520750
+assigned 104857600/113520750
+assigned 105906176/113520750
+assigned 106954752/113520750
+assigned 108003328/113520750
+assigned 109051904/113520750
+assigned 110100480/113520750
+assigned 111149056/113520750
+assigned 112197632/113520750
+assigned 113246208/113520750
+assigned 113520750/113520750
+{
+  "cluster_size": {
+    "max": 85003,
+    "min": 14,
+    "p50": 13244,
+    "p99": 35635
+  },
+  "iters": 12,
+  "k": 16384,
+  "padding_overhead": 1.0022401895688673,
+  "rabitq": true,
+  "rows": 113520750,
+  "sample": 1000000,
+  "seconds": 780.529086416,
+  "soar_lambda": 1.0,
+  "stored_per_vector": 2.0022401895688673
+}
+113520750 rows, 16384 clusters, 2677 queries
+| nprobe | % of clusters | top-10 reachable |
+|---|---|---|
+| 1 | 0.01% | 0.5363 |
+| 2 | 0.01% | 0.6603 |
+| 4 | 0.02% | 0.7569 |
+| 8 | 0.05% | 0.8181 |
+| 16 | 0.10% | 0.8645 |
+| 32 | 0.20% | 0.9036 |
+| 64 | 0.39% | 0.9350 |
+| 128 | 0.78% | 0.9568 |
+| 256 | 1.56% | 0.9736 |
+| 512 | 3.12% | 0.9842 |
+| 1024 | 6.25% | 0.9918 |
+| 2048 | 12.50% | 0.9963 |
+| 4096 | 25.00% | 0.9989 |
+| 8192 | 50.00% | 0.9998 |
+| 16384 | 100.00% | 1.0000 |
+113520750 rows, 16384 clusters, 2677 queries
+ivf 16 probes, 1000 cand, rerank tiered200: R@10 0.8484, 870 reranked
+ivf 32 probes, 1000 cand, rerank tiered200: R@10 0.8859, 851 reranked
+ivf 64 probes, 1000 cand, rerank tiered200: R@10 0.9160, 834 reranked
+ivf 128 probes, 1000 cand, rerank tiered200: R@10 0.9365, 821 reranked
+ivf 256 probes, 1000 cand, rerank tiered200: R@10 0.9522, 811 reranked
+ivf 32 probes, 500 cand, rerank tiered200: R@10 0.8793, 426 reranked
+ivf 64 probes, 500 cand, rerank tiered200: R@10 0.9090, 418 reranked
+ivf 64 probes, 1000 cand, rerank tiered100: R@10 0.9089, 834 reranked
+| run | R@10 vs 768 | R@10 vs 256 | nDCG@10 dl21 | nDCG@10 dl22 | nDCG@10 dl23 | nDCG@10 dev | vectors scanned | reranked |
+|---|---|---|---|---|---|---|---|---|
+| flat f32 768-d (exact) | 1.0000 | 0.8083 | 0.6935 | 0.5520 | 0.4704 | 0.3343 | - | - |
+| flat f32 256-d prefix (exact) | 0.8083 | 1.0000 | 0.6934 | 0.5557 | 0.4516 | 0.3312 | - | - |
+| ivf 16 probes, 1000 cand, rerank tiered200 | 0.8484 | 0.7203 | 0.6717 | 0.5344 | 0.4318 | 0.3033 | 230865 | 870 |
+| ivf 32 probes, 1000 cand, rerank tiered200 | 0.8859 | 0.7486 | 0.6806 | 0.5421 | 0.4453 | 0.3139 | 456785 | 851 |
+| ivf 64 probes, 1000 cand, rerank tiered200 | 0.9160 | 0.7699 | 0.6881 | 0.5483 | 0.4574 | 0.3237 | 912516 | 834 |
+| ivf 128 probes, 1000 cand, rerank tiered200 | 0.9365 | 0.7841 | 0.6930 | 0.5506 | 0.4595 | 0.3275 | 1838653 | 821 |
+| ivf 256 probes, 1000 cand, rerank tiered200 | 0.9522 | 0.7945 | 0.6917 | 0.5511 | 0.4649 | 0.3317 | 3710368 | 811 |
+| ivf 32 probes, 500 cand, rerank tiered200 | 0.8793 | 0.7479 | 0.6798 | 0.5405 | 0.4419 | 0.3136 | 456785 | 426 |
+| ivf 64 probes, 500 cand, rerank tiered200 | 0.9090 | 0.7685 | 0.6860 | 0.5470 | 0.4568 | 0.3234 | 912516 | 418 |
+| ivf 64 probes, 1000 cand, rerank tiered100 | 0.9089 | 0.7713 | 0.6878 | 0.5483 | 0.4560 | 0.3240 | 912516 | 834 |
+113520750 rows, 16384 clusters, 2677 queries
+ivf 64 probes, 500 cand, rerank tiered200, bound-pruned at rank 10, width 1: R@10 0.9090, 380 reranked
+ivf 64 probes, 1000 cand, rerank full, bound-pruned at rank 10, width 0.8: R@10 0.9159, 487 reranked
+ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.08: R@10 0.8499, 455 reranked
+ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.1: R@10 0.8866, 443 reranked
+ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.12: R@10 0.9100, 433 reranked
+ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.14: R@10 0.9235, 425 reranked
+ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.16: R@10 0.9340, 419 reranked
+| run | R@10 vs 768 | R@10 vs 256 | nDCG@10 dl21 | nDCG@10 dl22 | nDCG@10 dl23 | nDCG@10 dev | vectors scanned | reranked |
+|---|---|---|---|---|---|---|---|---|
+| flat f32 768-d (exact) | 1.0000 | 0.8083 | 0.6935 | 0.5520 | 0.4704 | 0.3343 | - | - |
+| flat f32 256-d prefix (exact) | 0.8083 | 1.0000 | 0.6934 | 0.5557 | 0.4516 | 0.3312 | - | - |
+| ivf 64 probes, 500 cand, rerank tiered200, bound-pruned at rank 10, width 1 | 0.9090 | 0.7685 | 0.6860 | 0.5470 | 0.4568 | 0.3237 | 912516 | 380 |
+| ivf 64 probes, 1000 cand, rerank full, bound-pruned at rank 10, width 0.8 | 0.9159 | 0.7697 | 0.6860 | 0.5472 | 0.4574 | 0.3231 | 912516 | 487 |
+| ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.08 | 0.8499 | 0.7278 | 0.6860 | 0.5343 | 0.4354 | 0.3080 | 267591 | 455 |
+| ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.1 | 0.8866 | 0.7556 | 0.6893 | 0.5408 | 0.4488 | 0.3212 | 486551 | 443 |
+| ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.12 | 0.9100 | 0.7713 | 0.6904 | 0.5447 | 0.4602 | 0.3266 | 769201 | 433 |
+| ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.14 | 0.9235 | 0.7804 | 0.6908 | 0.5494 | 0.4626 | 0.3282 | 1094777 | 425 |
+| ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.16 | 0.9340 | 0.7867 | 0.6908 | 0.5490 | 0.4623 | 0.3312 | 1447133 | 419 |
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 0,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 14.295083,
+    "mean": 4.249515952558836,
+    "p50": 4.0726249999999995,
+    "p99": 8.673833
+  },
+  "peak_rss_mb": 13886.84375,
+  "postings_io": {
+    "latency_pass": null,
+    "qps_pass": null
+  },
+  "probed_per_query": 32.0,
+  "qps": 464.9131817073639,
+  "reranked_per_query": 425.61860291370937,
+  "rows": 113520750,
+  "run": "ivf 32 probes, 500 cand, rerank tiered200",
+  "scanned_per_query": 456785.105715353,
+  "ssd_mode": false,
+  "stage_ms": {
+    "fetch": 0.0,
+    "rerank": 3.2434528020171833,
+    "route": 0.09244143481509152,
+    "scan": 0.9117632241314906,
+    "tier2": 0.34163835225999256
+  },
+  "threads": 12
+}
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 0,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 44.657000000000004,
+    "mean": 4.9598055364213725,
+    "p50": 4.819167,
+    "p99": 7.393375
+  },
+  "peak_rss_mb": 14197.390625,
+  "postings_io": {
+    "latency_pass": null,
+    "qps_pass": null
+  },
+  "probed_per_query": 64.0,
+  "qps": 460.43916320170035,
+  "reranked_per_query": 417.7952932387,
+  "rows": 113520750,
+  "run": "ivf 64 probes, 500 cand, rerank tiered200",
+  "scanned_per_query": 912516.3750466941,
+  "ssd_mode": false,
+  "stage_ms": {
+    "fetch": 0.0,
+    "rerank": 3.0907933018304075,
+    "route": 0.11828694732909974,
+    "scan": 1.7488836454986925,
+    "tier2": 0.1429682827792305
+  },
+  "threads": 12
+}
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 0,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 32.384375,
+    "mean": 6.5536687019051225,
+    "p50": 5.790416,
+    "p99": 17.164542
+  },
+  "peak_rss_mb": 15238.796875,
+  "postings_io": {
+    "latency_pass": null,
+    "qps_pass": null
+  },
+  "probed_per_query": 64.0,
+  "qps": 420.1441063068098,
+  "reranked_per_query": 834.4632050803137,
+  "rows": 113520750,
+  "run": "ivf 64 probes, 1000 cand, rerank tiered200",
+  "scanned_per_query": 912516.3750466941,
+  "ssd_mode": false,
+  "stage_ms": {
+    "fetch": 0.0,
+    "rerank": 4.373976912588718,
+    "route": 0.12009694471423235,
+    "scan": 2.0581466824803885,
+    "tier2": 1.438090543145312
+  },
+  "threads": 12
+}
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 0,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 76.166583,
+    "mean": 10.531429201344807,
+    "p50": 9.275749999999999,
+    "p99": 26.106458999999997
+  },
+  "peak_rss_mb": 15486.03125,
+  "postings_io": {
+    "latency_pass": null,
+    "qps_pass": null
+  },
+  "probed_per_query": 128.0,
+  "qps": 308.30675958251555,
+  "reranked_per_query": 821.1651101979828,
+  "rows": 113520750,
+  "run": "ivf 128 probes, 1000 cand, rerank tiered200",
+  "scanned_per_query": 1838653.035487486,
+  "ssd_mode": false,
+  "stage_ms": {
+    "fetch": 0.0,
+    "rerank": 5.906068614867388,
+    "route": 0.13995095816212177,
+    "scan": 4.483817334329473,
+    "tier2": 2.9659503167725068
+  },
+  "threads": 12
+}
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 0,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 9.38775,
+    "mean": 4.751502416511008,
+    "p50": 4.706542,
+    "p99": 6.676583
+  },
+  "peak_rss_mb": 13986.90625,
+  "postings_io": {
+    "latency_pass": null,
+    "qps_pass": null
+  },
+  "probed_per_query": 64.0,
+  "qps": 487.58435000479005,
+  "reranked_per_query": 380.0082181546507,
+  "rows": 113520750,
+  "run": "ivf 64 probes, 500 cand, rerank tiered200, bound-pruned at rank 10, width 1",
+  "scanned_per_query": 912516.3750466941,
+  "ssd_mode": false,
+  "stage_ms": {
+    "fetch": 0.0,
+    "rerank": 3.0821248098617855,
+    "route": 0.07201211991034741,
+    "scan": 1.595415914456481,
+    "tier2": 0.23052521031004858
+  },
+  "threads": 12
+}
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 0,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 18.060416999999998,
+    "mean": 4.5626496918191926,
+    "p50": 3.891333,
+    "p99": 10.757708
+  },
+  "peak_rss_mb": 14078.6875,
+  "postings_io": {
+    "latency_pass": null,
+    "qps_pass": null
+  },
+  "probed_per_query": 53.497945461337316,
+  "qps": 474.0472451157968,
+  "reranked_per_query": 432.78968995143816,
+  "rows": 113520750,
+  "run": "ivf 256 probes, 500 cand, rerank tiered200, probe margin 0.12",
+  "scanned_per_query": 769201.4045573403,
+  "ssd_mode": false,
+  "stage_ms": {
+    "fetch": 0.0,
+    "rerank": 3.075448039223011,
+    "route": 0.11211005528576766,
+    "scan": 1.373060884945835,
+    "tier2": 0.14562322487859544
+  },
+  "threads": 12
+}
+16384 clusters, 10.03 GB of posting lists in 9.1s
+113520750 rows, 16384 clusters, 2677 queries
+ivf 64 probes, 500 cand, rerank ssd300: R@10 0.9021, 418 reranked
+ivf 64 probes, 500 cand, rerank ssd400: R@10 0.9078, 418 reranked
+ivf 128 probes, 1000 cand, rerank ssd400: R@10 0.9282, 821 reranked
+ivf 256 probes, 500 cand, rerank ssd400, probe margin 0.12: R@10 0.9074, 433 reranked
+| run | R@10 vs 768 | R@10 vs 256 | nDCG@10 dl21 | nDCG@10 dl22 | nDCG@10 dl23 | nDCG@10 dev | vectors scanned | reranked |
+|---|---|---|---|---|---|---|---|---|
+| flat f32 768-d (exact) | 1.0000 | 0.8083 | 0.6935 | 0.5520 | 0.4704 | 0.3343 | - | - |
+| flat f32 256-d prefix (exact) | 0.8083 | 1.0000 | 0.6934 | 0.5557 | 0.4516 | 0.3312 | - | - |
+| ivf 64 probes, 500 cand, rerank ssd300 | 0.9021 | 0.7679 | 0.6844 | 0.5455 | 0.4544 | 0.3235 | 912516 | 418 |
+| ivf 64 probes, 500 cand, rerank ssd400 | 0.9078 | 0.7685 | 0.6860 | 0.5461 | 0.4570 | 0.3232 | 912516 | 418 |
+| ivf 128 probes, 1000 cand, rerank ssd400 | 0.9282 | 0.7830 | 0.6923 | 0.5497 | 0.4580 | 0.3276 | 1838653 | 821 |
+| ivf 256 probes, 500 cand, rerank ssd400, probe margin 0.12 | 0.9074 | 0.7705 | 0.6904 | 0.5448 | 0.4600 | 0.3261 | 769201 | 433 |
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 0,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 21.524250000000002,
+    "mean": 13.323262041090775,
+    "p50": 13.206375,
+    "p99": 17.174083
+  },
+  "peak_rss_mb": 1167.4375,
+  "postings_io": {
+    "latency_pass": {
+      "hit_rate": 0.0,
+      "mb_read_per_query": 40.15072050205454
+    },
+    "qps_pass": {
+      "hit_rate": 0.0,
+      "mb_read_per_query": 40.15072050205454
+    }
+  },
+  "probed_per_query": 64.0,
+  "qps": 90.22748913252951,
+  "reranked_per_query": 417.7952932387,
+  "rows": 113520750,
+  "run": "ivf 64 probes, 500 cand, rerank ssd300",
+  "scanned_per_query": 912516.3750466941,
+  "ssd_mode": true,
+  "stage_ms": {
+    "fetch": 6.699548769144565,
+    "rerank": 3.9057058098617854,
+    "route": 0.15926834628315278,
+    "scan": 9.255852747104969,
+    "tier2": 0.0
+  },
+  "threads": 12
+}
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 1024,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 26.780167000000002,
+    "mean": 11.013741719835656,
+    "p50": 11.117541999999998,
+    "p99": 15.90675
+  },
+  "peak_rss_mb": 3318.734375,
+  "postings_io": {
+    "latency_pass": {
+      "hit_rate": 0.2643175663055659,
+      "mb_read_per_query": 29.12151199701158
+    },
+    "qps_pass": {
+      "hit_rate": 0.24206200971236458,
+      "mb_read_per_query": 30.126203361972355
+    }
+  },
+  "probed_per_query": 64.0,
+  "qps": 107.9387152613786,
+  "reranked_per_query": 417.7952932387,
+  "rows": 113520750,
+  "run": "ivf 64 probes, 500 cand, rerank ssd300",
+  "scanned_per_query": 912516.3750466941,
+  "ssd_mode": true,
+  "stage_ms": {
+    "fetch": 4.243101309675009,
+    "rerank": 3.941691758311543,
+    "route": 0.1461012540156892,
+    "scan": 6.923462174075458,
+    "tier2": 0.0
+  },
+  "threads": 12
+}
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 0,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 45.543959,
+    "mean": 11.770787785580866,
+    "p50": 7.818458000000001,
+    "p99": 40.712084000000004
+  },
+  "peak_rss_mb": 1111.109375,
+  "postings_io": {
+    "latency_pass": {
+      "hit_rate": 0.0,
+      "mb_read_per_query": 33.84486180052298
+    },
+    "qps_pass": {
+      "hit_rate": 0.0,
+      "mb_read_per_query": 33.84486180052298
+    }
+  },
+  "probed_per_query": 53.497945461337316,
+  "qps": 92.91132370336848,
+  "reranked_per_query": 432.78931639895404,
+  "rows": 113520750,
+  "run": "ivf 256 probes, 500 cand, rerank ssd400, probe margin 0.12",
+  "scanned_per_query": 769201.4045573403,
+  "ssd_mode": true,
+  "stage_ms": {
+    "fetch": 5.280763391109451,
+    "rerank": 4.751846574150168,
+    "route": 0.1337230026148674,
+    "scan": 6.882979147553231,
+    "tier2": 0.0
+  },
+  "threads": 12
+}
+113520750 rows, 16384 clusters, 2677 queries
+{
+  "cache_mb": 1024,
+  "clusters": 16384,
+  "cold": true,
+  "kind": "bench",
+  "latency_ms": {
+    "max": 37.744583999999996,
+    "mean": 9.608345756070236,
+    "p50": 7.191542,
+    "p99": 28.840042
+  },
+  "peak_rss_mb": 3294.03125,
+  "postings_io": {
+    "latency_pass": {
+      "hit_rate": 0.3351278506291284,
+      "mb_read_per_query": 21.777219370937615
+    },
+    "qps_pass": {
+      "hit_rate": 0.308475428379907,
+      "mb_read_per_query": 22.72183694583489
+    }
+  },
+  "probed_per_query": 53.497945461337316,
+  "qps": 116.6214995555974,
+  "reranked_per_query": 432.7889428464699,
+  "rows": 113520750,
+  "run": "ivf 256 probes, 500 cand, rerank ssd400, probe margin 0.12",
+  "scanned_per_query": 769201.4045573403,
+  "ssd_mode": true,
+  "stage_ms": {
+    "fetch": 2.699486207695181,
+    "rerank": 4.744704022039596,
+    "route": 0.1158809525588345,
+    "scan": 4.745593598804632,
+    "tier2": 0.0
+  },
+  "threads": 12
+}
