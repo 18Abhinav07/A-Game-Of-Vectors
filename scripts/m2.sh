@@ -12,7 +12,7 @@ STREAM=()
 for i in $(seq -f "%02g" 10 59); do STREAM+=("data/raw/corpus/$i.parquet"); done
 $B/ingest data/raw/corpus/0{0..9}.parquet "${STREAM[@]}" --out data/full/ingest --wait --consume-from 10 2>&1 \
   | awk 'NR % 50 == 0 || !/rows\/s  \(/'
-wait $DL
+wait $DL || true  # the ingest is the source of truth; a restarted downloader may report a signal
 cat data/full/ingest/meta.json
 [[ "${1:-}" == "ingest" ]] && exit 0
 $B/index --ingest data/full/ingest --out data/full/index --k 16384 --sample 1000000 --soar 1.0 --rabitq
