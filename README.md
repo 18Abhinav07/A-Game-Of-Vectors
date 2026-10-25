@@ -122,6 +122,7 @@ What a real service would still need, roughly in order:
 cargo test --release
 ./scripts/m1.sh          # 10 shards: download, ingest, index (plain + SOAR), eval, bench
 ./scripts/m2.sh          # all 60 shards, streamed and deleted as they are ingested
+./scripts/ac-bench.sh    # M1 latency re-runs on AC power (refuses on battery or Low Power Mode)
 ```
 Binaries: `ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
 `search [--ssd --cache-mb N] [--shards host:port,... [--two-phase]] eval | routing | bench [--cold]`,
