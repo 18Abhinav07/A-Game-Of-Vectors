@@ -21,6 +21,9 @@ struct Args {
     sample: usize,
     #[arg(long, default_value_t = 12)]
     iters: usize,
+    /// Split clusters larger than this multiple of the mean during k-means training.
+    #[arg(long)]
+    balance: Option<f32>,
     /// Spill every vector into a second, SOAR-chosen cluster with this λ (1.0 in the paper).
     #[arg(long)]
     soar: Option<f32>,
@@ -41,7 +44,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let corpus = Corpus::open(&a.ingest)?;
-    let stats = build(&corpus, &a.out, a.k, a.sample, a.iters, a.soar, a.rabitq)?;
+    let stats = build(&corpus, &a.out, a.k, a.sample, a.iters, a.balance, a.soar, a.rabitq)?;
     let secs = t0.elapsed().as_secs_f64();
 
     let mut sizes = stats.sizes.clone();
@@ -49,7 +52,7 @@ fn main() -> Result<()> {
     let pct = |p: f64| sizes[((sizes.len() - 1) as f64 * p) as usize];
     let padded: usize = sizes.iter().map(|s| s.div_ceil(sieve::lut::BLOCK) * sieve::lut::BLOCK).sum();
     let meta = serde_json::json!({
-        "rows": corpus.n, "k": stats.k, "soar_lambda": a.soar, "rabitq": a.rabitq, "sample": a.sample, "iters": a.iters, "seconds": secs,
+        "rows": corpus.n, "k": stats.k, "soar_lambda": a.soar, "rabitq": a.rabitq, "sample": a.sample, "iters": a.iters, "balance": a.balance, "seconds": secs,
         "cluster_size": { "min": pct(0.0), "p50": pct(0.5), "p99": pct(0.99), "max": pct(1.0) },
         "padding_overhead": padded as f64 / corpus.n as f64 - 1.0,
         "stored_per_vector": padded as f64 / corpus.n as f64,

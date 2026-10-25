@@ -197,6 +197,27 @@ read. RAM holds only the centroids, the record offsets and an optional hot-clust
   record is dropped after its scan instead of all 64 being held at once. Recall is unchanged
   (0.912). With margin probing the difference is within noise (`results/m1-stream-ab.txt`).
 
+### D14. Balanced k-means: tried, no gain at equal scan (kept behind `--balance`, off)
+Cluster sizes are skewed (M1 stored slots: p50 8.5k, max 45k; M2: p50 13k, max 85k), and a
+query that probes the big clusters pays for them in scan and SSD bytes. `index --balance r`
+adds a split step to training: after each centroid update, every cluster larger than r × the
+mean gives a random member to one of the clusters smaller than half the mean, which restarts
+there. Assignment stays nearest-centroid, so the estimator and SOAR are unchanged.
+- **It balances the sample, not the corpus.** At r = 1.5 the largest sample cluster falls from
+  21× to 6× the mean (2609 → 724 of 122). But about 800 centroids move every iteration
+  without settling, and on the full 18.4M rows the largest cluster only falls 45k → 42k, with p99
+  20.9k → 21.5k. The tail comes from dense regions of the data, which a 500k sample does not
+  pin down.
+- **Recall at equal scan is unchanged.** At 16 probes, R@10 goes 0.846 → 0.853, but the vectors
+  scanned per query go 151k → 170k, because queries land in the dense regions. The baseline's
+  own curve gives 0.851 at 170k. At 64 probes (tiered200): 0.9191 vs 0.9197 at 623k vs 683k
+  scanned. r = 2.0 is the same, within 0.006.
+- **What would work instead** is bounding the work per probe rather than the cluster size: split
+  oversized clusters after assignment, on the real counts, into sub-clusters with their own
+  centroids (SPANN's hierarchical balanced clustering), or cap the bytes read per query (the D12
+  tail item). Both change the layout, so they are left for the sharded build.
+  (`results/m1-balance.jsonl`)
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.
