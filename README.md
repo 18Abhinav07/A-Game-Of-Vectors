@@ -48,6 +48,40 @@ and fixes that.
 Full tables, ablations and kernel numbers: [BENCHMARKS.md](BENCHMARKS.md). Every design decision
 and the evidence for it: [DESIGN.md](DESIGN.md).
 
+## Scaling to 1B: what the measurements imply
+These are projections from measured per-slot sizes, not runs. SSD mode stores 44 B per slot
+(32 B code, two f32 factors, u32 id), and SOAR stores each vector twice.
+
+| | M1 (measured) | 113.5M (M2) | 1B (projected) |
+|---|---|---|---|
+| clusters | 4,096 | 16,384 | ~131k |
+| posting lists on SSD | 1.63 GB | ~10 GB | ~88 GB |
+| int8 rerank rows on SSD | 14 GB | 87 GB | 768 GB |
+| RAM: centroids + offsets | ~4 MB | ~17 MB | ~135 MB |
+| peak RSS, no cache | 287 MB | pending | well under 1 GB |
+| bytes read per query, 64 probes | 27 MB | ~39 MB | ~43 MB |
+
+RAM stops being the limit: it scales with the cluster count, not N. Disk capacity and
+**bandwidth** take its place. At ~40 MB per query, one NVMe drive with ~3–6 GB/s sustains roughly
+75–150 cold queries/s, and a cluster cache lifts that in proportion to its hit rate. So a 1B index
+fits on one machine with a 1 TB SSD, but a production QPS target means sharding across
+nodes, which is how Exa describes its own deployment. Recall at 1B for a fixed probe count is
+untested. Bigger clusters and more vectors per probe both work against it.
+
+## Production gaps
+What a real service would still need, roughly in order:
+- **Sharding and a coordinator**: partition clusters across nodes, fan out, merge top-k, and
+  replicate for availability. Today it is one process.
+- **Live updates**: inserts and deletes without a rebuild (SPFresh-style split/merge with a WAL).
+  Today the index is built offline.
+- **Filters and hybrid search**: metadata predicates during the scan, plus BM25 fusion.
+- **I/O**: macOS has no io_uring, so queue depth comes from threads blocked in `pread`. On Linux,
+  io_uring with registered buffers would remove the thread pool.
+- **Tail latency**: margin probing has a long p99 (~51 ms) because flat-score queries probe up to
+  the cap. A per-query byte budget would bound it.
+- **Observability**: per-stage histograms, cache and I/O metrics exported, not just bench JSON.
+- **Baselines**: FAISS IVF-PQ and HNSW on the same slice, at equal recall.
+
 ## Reproduce
 ```sh
 cargo test --release
