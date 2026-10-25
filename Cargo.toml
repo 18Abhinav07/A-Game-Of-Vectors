@@ -1,0 +1,24 @@
+[package]
+name = "sieve"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+arrow-array = "60.0.0"
+arrow-schema = "60.0.0"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
+memmap2 = "0.9.12"
+parquet = { version = "60.0.0", default-features = false, features = ["arrow", "snap"] }
+rayon = "1.12.0"
+serde_json = "1.0.154"
+
+[dev-dependencies]
+proptest = "1.12.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"   # symbols for samply/flamegraphs
+panic = "abort"

@@ -1,0 +1,593 @@
+//! The corpus files written by ingest, the IVF build, and the query path (DESIGN.md D1–D4).
+
+use anyhow::{Context, Result};
+use rayon::prelude::*;
+use std::path::Path;
+
+use crate::blas::gemm_abt;
+use crate::lut::{BLOCK, BLOCK_BYTES, Lut, pack_block};
+use crate::quant::{Int8Quantizer, dot_f32, dot_i8i8, normalize, query_i8};
+use crate::rabitq::{self, Rotation};
+use crate::store::{Appender, Mapped, read_vec, write_vec};
+use crate::tier2::{self, Tier2};
+use crate::topk::TopK;
+use crate::{CODE_BYTES, DIM, PDIM};
+
+/// Padding slots in a cluster's last block carry this id and are never returned.
+pub const PAD: u32 = u32::MAX;
+
+/// Ingest output: codes (RAM tier), int8 rerank vectors (SSD tier), prefix norms, doc ids.
+pub struct Corpus {
+    pub n: usize,
+    pub codes: Mapped<u8>,
+    pub rerank: Mapped<i8>,
+    pub norm256: Vec<f32>,
+    pub quant: Int8Quantizer,
+    docid_bytes: Mapped<u8>,
+    docid_off: Mapped<u64>,
+    /// pread access to rerank.i8 for the SSD tier, optionally bypassing the page cache.
+    pub ssd: RowReader,
+}
+
+/// Reads int8 rerank rows with positioned reads issued in parallel, so a query keeps many SSD
+/// requests in flight (one blocking pread per worker; macOS has no io_uring).
+pub struct RowReader {
+    file: std::fs::File,
+}
+
+impl RowReader {
+    pub fn open(path: &Path) -> Result<Self> {
+        Ok(Self { file: std::fs::File::open(path).with_context(|| format!("open {}", path.display()))? })
+    }
+
+    /// F_NOCACHE: every read goes to the device, so latency is measured cold.
+    pub fn bypass_cache(&self) {
+        use std::os::unix::io::AsRawFd;
+        unsafe extern "C" {
+            fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+        }
+        #[cfg(target_os = "macos")]
+        // SAFETY: fcntl(F_NOCACHE = 48) on a descriptor this struct owns.
+        unsafe {
+            fcntl(self.file.as_raw_fd(), 48, 1);
+        }
+    }
+
+    pub fn read_rows(&self, ids: &[u32], out: &mut [i8]) {
+        use std::os::unix::fs::FileExt;
+        const PER_TASK: usize = 8;
+        out.par_chunks_mut(DIM * PER_TASK).zip(ids.par_chunks(PER_TASK)).for_each(|(o, ids)| {
+            for (row, &id) in o.chunks_exact_mut(DIM).zip(ids) {
+                self.file.read_exact_at(bytemuck::cast_slice_mut(row), id as u64 * DIM as u64).expect("rerank.i8 read");
+            }
+        });
+    }
+}
+
+impl Corpus {
+    pub fn open(dir: &Path) -> Result<Self> {
+        let norm256: Vec<f32> = read_vec(&dir.join("norm256.f32"))?;
+        let c = Self {
+            n: norm256.len(),
+            codes: Mapped::open(&dir.join("codes.bin"))?,
+            rerank: Mapped::open(&dir.join("rerank.i8"))?,
+            quant: Int8Quantizer { scale: read_vec(&dir.join("quant.f32"))? },
+            docid_bytes: Mapped::open(&dir.join("docids.bin"))?,
+            docid_off: Mapped::open(&dir.join("docids.off"))?,
+            ssd: RowReader::open(&dir.join("rerank.i8"))?,
+            norm256,
+        };
+        anyhow::ensure!(c.codes.as_slice().len() == c.n * CODE_BYTES, "codes.bin size");
+        anyhow::ensure!(c.rerank.as_slice().len() == c.n * DIM, "rerank.i8 size");
+        Ok(c)
+    }
+
+    #[inline]
+    pub fn code(&self, i: u32) -> &[u8] {
+        let i = i as usize * CODE_BYTES;
+        &self.codes.as_slice()[i..i + CODE_BYTES]
+    }
+
+    #[inline]
+    pub fn rerank_row(&self, i: u32) -> &[i8] {
+        let i = i as usize * DIM;
+        &self.rerank.as_slice()[i..i + DIM]
+    }
+
+    pub fn doc_id(&self, i: u32) -> &str {
+        let off = self.docid_off.as_slice();
+        let (a, b) = (off[i as usize] as usize, off[i as usize + 1] as usize);
+        std::str::from_utf8(&self.docid_bytes.as_slice()[a..b]).unwrap_or("")
+    }
+
+    /// The normalised 256-dim prefix reconstructed from the int8 rerank row.
+    pub fn prefix_f32(&self, i: u32, out: &mut [f32]) {
+        for ((o, &x), &s) in out.iter_mut().zip(&self.rerank_row(i)[..PDIM]).zip(&self.quant.scale) {
+            *o = x as f32 / s;
+        }
+        normalize(out);
+    }
+}
+
+/// splitmix64, for reproducible sampling without a dependency.
+pub struct Rng(u64);
+impl Rng {
+    pub fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+    pub fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    pub fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// The `m` nearest centroids (max inner product) of every row, best first, via sgemm in blocks.
+pub fn assign_top(rows: &[f32], cents: &[f32], k: usize, m: usize) -> Vec<u32> {
+    const B: usize = 8192;
+    let n = rows.len() / PDIM;
+    let mut out = vec![0u32; n * m];
+    let mut scores = vec![0f32; B * k];
+    for (blk, o) in rows.chunks(B * PDIM).zip(out.chunks_mut(B * m)) {
+        let rows_in = blk.len() / PDIM;
+        let s = &mut scores[..rows_in * k];
+        gemm_abt(blk, cents, rows_in, k, PDIM, s);
+        s.par_chunks(k).zip(o.par_chunks_mut(m)).for_each(|(row, a)| {
+            if m == 1 {
+                a[0] = row.iter().enumerate().fold((0, f32::MIN), |b, (j, &v)| if v > b.1 { (j, v) } else { b }).0 as u32;
+                return;
+            }
+            let mut t = TopK::new(m);
+            row.iter().enumerate().for_each(|(j, &v)| t.push(v, j as u32));
+            a.iter_mut().zip(t.into_sorted()).for_each(|(a, (_, j))| *a = j);
+        });
+    }
+    out
+}
+
+pub fn assign(rows: &[f32], cents: &[f32], k: usize) -> Vec<u32> {
+    assign_top(rows, cents, k, 1)
+}
+
+/// SOAR secondary assignment (Sun et al., NeurIPS 2023). Among the candidate centroids, pick the
+/// one minimising ||x − c||² + λ·⟨r̂, x − c⟩², where r is the residual to the primary centroid.
+/// The penalty favours a centroid whose residual is orthogonal to r, so the query that misses
+/// the primary cluster (large ⟨q, r⟩) is likely to reach the secondary one.
+pub fn soar_secondary(x: &[f32], cents: &[f32], cand: &[u32], lambda: f32) -> u32 {
+    let c1 = &cents[cand[0] as usize * PDIM..][..PDIM];
+    let x_c1 = dot_f32(x, c1);
+    // x and the centroids are unit length: ||r||² = 2 − 2⟨x,c1⟩, ⟨r,x⟩ = 1 − ⟨x,c1⟩.
+    let r2 = (2.0 - 2.0 * x_c1).max(1e-12);
+    let r_x = 1.0 - x_c1;
+    let mut best = (f32::MAX, cand[1]);
+    for &c in &cand[1..] {
+        let cv = &cents[c as usize * PDIM..][..PDIM];
+        let x_c = dot_f32(x, cv);
+        let r_c = x_c - dot_f32(c1, cv);
+        let along = r_x - r_c;
+        let loss = (2.0 - 2.0 * x_c) + lambda * along * along / r2;
+        if loss < best.0 {
+            best = (loss, c);
+        }
+    }
+    best.1
+}
+
+/// Spherical k-means: centroids stay unit length, assignment by inner product.
+pub fn kmeans(sample: &[f32], k: usize, iters: usize, seed: u64) -> Vec<f32> {
+    let n = sample.len() / PDIM;
+    let mut rng = Rng::new(seed);
+    let mut cents: Vec<f32> = (0..k).flat_map(|_| sample[rng.below(n) * PDIM..][..PDIM].to_vec()).collect();
+    for it in 0..iters {
+        let a = assign(sample, &cents, k);
+        let mut sums = vec![0f32; k * PDIM];
+        let mut counts = vec![0usize; k];
+        for (row, &c) in sample.chunks_exact(PDIM).zip(&a) {
+            counts[c as usize] += 1;
+            sums[c as usize * PDIM..][..PDIM].iter_mut().zip(row).for_each(|(s, x)| *s += x);
+        }
+        let mut empty = 0;
+        for c in 0..k {
+            let dst = &mut cents[c * PDIM..][..PDIM];
+            if counts[c] == 0 {
+                empty += 1;
+                dst.copy_from_slice(&sample[rng.below(n) * PDIM..][..PDIM]);
+            } else {
+                dst.copy_from_slice(&sums[c * PDIM..][..PDIM]);
+                normalize(dst);
+            }
+        }
+        let max = counts.iter().max().unwrap();
+        eprintln!("kmeans iter {it}: largest cluster {max}, empty {empty}");
+    }
+    cents
+}
+
+pub struct BuildStats {
+    pub k: usize,
+    pub sizes: Vec<usize>,
+}
+
+/// One stored slot's RaBitQ residual code and its `[mul, err]` factors.
+type ResSlot = ([u8; CODE_BYTES], [f32; 2]);
+
+/// Trains centroids on a sample, assigns every vector and writes the cluster-major layout.
+/// With `soar_lambda` set, every vector is also spilled into a SOAR secondary cluster. With
+/// `rabitq`, each slot holds the RaBitQ code of the vector's residual to that slot's cluster
+/// (so the two SOAR copies get different codes) instead of the global sign code.
+pub fn build(corpus: &Corpus, out: &Path, k: usize, sample_n: usize, iters: usize, soar_lambda: Option<f32>, rabitq: bool) -> Result<BuildStats> {
+    std::fs::create_dir_all(out)?;
+    let n = corpus.n;
+    // Assign in chunks so the reconstructed prefixes never all sit in RAM at once.
+    const CHUNK: usize = 1 << 20;
+    let mut rng = Rng::new(42);
+    let sample_n = sample_n.min(n);
+    let mut sample = vec![0f32; sample_n * PDIM];
+    for row in sample.chunks_exact_mut(PDIM) {
+        corpus.prefix_f32(rng.below(n) as u32, row);
+    }
+    let cents = kmeans(&sample, k, iters, 7);
+    let t2 = Tier2::fit(&sample);
+    write_vec(&out.join("tier2.sigma"), &t2.sigma)?;
+    drop(sample);
+    let mut t2_codes = Appender::create(&out.join("tier2.bin"))?;
+    let mut t2_norms = Appender::create(&out.join("tier2.norm"))?;
+    let mut code_buf = vec![0u8; CHUNK * tier2::BYTES];
+    let mut norm_buf = vec![0f32; CHUNK];
+    write_vec(&out.join("centroids.f32"), &cents)?;
+    let rot = rabitq.then(|| Rotation::new(11));
+    let cents_rot: Vec<f32> = match &rot {
+        Some(r) => cents.chunks_exact(PDIM).flat_map(|c| {
+            let mut c = c.to_vec();
+            r.apply(&mut c);
+            c
+        }).collect(),
+        None => Vec::new(),
+    };
+
+    const SOAR_CAND: usize = 16;
+    let mut members: Vec<Vec<u32>> = vec![Vec::new(); k];
+    let mut res_members: Vec<Vec<ResSlot>> = vec![Vec::new(); if rabitq { k } else { 0 }];
+    let mut rows = vec![0f32; CHUNK * PDIM];
+    for start in (0..n).step_by(CHUNK) {
+        let m = CHUNK.min(n - start);
+        let rows = &mut rows[..m * PDIM];
+        rows.par_chunks_mut(PDIM).enumerate().for_each(|(j, r)| corpus.prefix_f32((start + j) as u32, r));
+        rows.par_chunks(PDIM)
+            .zip(code_buf[..m * tier2::BYTES].par_chunks_mut(tier2::BYTES))
+            .zip(norm_buf[..m].par_iter_mut())
+            .for_each(|((r, c), nrm)| *nrm = t2.encode(r, c));
+        t2_codes.write(&code_buf[..m * tier2::BYTES])?;
+        t2_norms.write(&norm_buf[..m])?;
+        // Up to two clusters per row; PAD marks "no secondary".
+        let pairs: Vec<[u32; 2]> = match soar_lambda {
+            None => assign(rows, &cents, k).into_iter().map(|c| [c, PAD]).collect(),
+            Some(lambda) => {
+                let top = assign_top(rows, &cents, k, SOAR_CAND);
+                rows.par_chunks(PDIM)
+                    .zip(top.par_chunks(SOAR_CAND))
+                    .map(|(x, cand)| [cand[0], soar_secondary(x, &cents, cand, lambda)])
+                    .collect()
+            }
+        };
+        let enc: Vec<[ResSlot; 2]> = match &rot {
+            Some(r) => rows
+                .par_chunks(PDIM)
+                .zip(&pairs)
+                .map(|(x, pair)| {
+                    let mut xr = x.to_vec();
+                    r.apply(&mut xr);
+                    pair.map(|c| {
+                        let mut code = [0u8; CODE_BYTES];
+                        if c == PAD {
+                            return (code, [0.0; 2]);
+                        }
+                        let f = rabitq::encode(&xr, &cents_rot[c as usize * PDIM..][..PDIM], &mut code);
+                        (code, f)
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        for (j, pair) in pairs.iter().enumerate() {
+            for (h, &c) in pair.iter().enumerate().filter(|x| *x.1 != PAD) {
+                members[c as usize].push((start + j) as u32);
+                if rabitq {
+                    res_members[c as usize].push(enc[j][h]);
+                }
+            }
+        }
+        eprintln!("assigned {}/{n}", start + m);
+    }
+    let sizes: Vec<usize> = members.iter().map(Vec::len).collect();
+
+    let mut block_off = Vec::with_capacity(k + 1);
+    let mut ids = Appender::create(&out.join("ids.u32"))?;
+    let mut blocks = Appender::create(&out.join("blocks.bin"))?;
+    let mut factors = match rabitq {
+        true => Some(Appender::create(&out.join("factors.f32"))?),
+        false => None,
+    };
+    let mut nblocks = 0u64;
+    let mut buf = vec![0u8; BLOCK_BYTES];
+    for (c, m) in members.iter().enumerate() {
+        block_off.push(nblocks);
+        for (bi, chunk) in m.chunks(BLOCK).enumerate() {
+            let codes: Vec<&[u8]> = match rabitq {
+                true => {
+                    let res = &res_members[c][bi * BLOCK..][..chunk.len()];
+                    let mut f = [[0f32; 2]; BLOCK];
+                    f.iter_mut().zip(res).for_each(|(f, r)| *f = r.1);
+                    factors.as_mut().unwrap().write(f.as_flattened())?;
+                    res.iter().map(|r| &r.0[..]).collect()
+                }
+                false => chunk.iter().map(|&i| corpus.code(i)).collect(),
+            };
+            pack_block(&codes, &mut buf);
+            blocks.write(&buf)?;
+            let mut slot = [PAD; BLOCK];
+            slot[..chunk.len()].copy_from_slice(chunk);
+            ids.write(&slot)?;
+            nblocks += 1;
+        }
+    }
+    block_off.push(nblocks);
+    ids.finish()?;
+    blocks.finish()?;
+    write_vec(&out.join("block_off.u64"), &block_off)?;
+    if let (Some(f), Some(r)) = (factors, &rot) {
+        f.finish()?;
+        write_vec(&out.join("rotation.f32"), r.signs())?;
+    }
+    t2_codes.finish()?;
+    t2_norms.finish()?;
+    Ok(BuildStats { k, sizes })
+}
+
+/// How many candidates ahead the rerank loop prefetches.
+const PREFETCH_ROWS: usize = 16;
+
+/// Hints every cache line of `row` into L1. A hint only: it never faults and never blocks.
+#[inline(always)]
+fn prefetch(row: &[i8]) {
+    #[cfg(target_arch = "aarch64")]
+    for off in (0..row.len()).step_by(64) {
+        // SAFETY: PRFM is a hint and has no architectural effect; the address is inside `row`.
+        unsafe { std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) row.as_ptr().add(off), options(nostack, preserves_flags, readonly)) };
+    }
+}
+
+pub struct Index {
+    pub k: usize,
+    pub centroids: Vec<f32>,
+    pub block_off: Vec<u64>,
+    pub ids: Mapped<u32>,
+    pub blocks: Mapped<u8>,
+    /// The RAM middle tier, if this index was built with one.
+    pub tier2: Option<(Tier2, Mapped<u8>, Vec<f32>)>,
+    /// RaBitQ residual codes: the rotation and `[mul, err]` per slot, if built with them.
+    pub rabitq: Option<(Rotation, Mapped<f32>)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rerank {
+    /// Order by the LUT score alone.
+    None,
+    /// Exact-ish cosine on the int8 256-dim prefix.
+    Prefix,
+    /// Exact-ish cosine on the int8 768-dim vector.
+    Full,
+    /// Prefix rerank of every candidate, then full rerank of the best `r`: the SSD tier then
+    /// serves `r` reads per query instead of `cand`.
+    Tiered(usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Params {
+    pub nprobe: usize,
+    pub cand: usize,
+    pub rerank: Rerank,
+    pub k: usize,
+}
+
+/// Per-thread buffers so the query path does not allocate.
+pub struct Scratch {
+    cent: Vec<f32>,
+    scores: Vec<u16>,
+    w: Vec<f32>,
+    wq: Vec<i8>,
+    rows: Vec<i8>,
+}
+
+impl Scratch {
+    pub fn new() -> Self {
+        Self { cent: Vec::new(), scores: Vec::new(), w: Vec::new(), wq: Vec::new(), rows: Vec::new() }
+    }
+}
+
+impl Default for Scratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Where a query spends its time, in nanoseconds.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Timing {
+    pub route: u64,
+    pub scan: u64,
+    pub rerank: u64,
+    /// Part of `rerank` spent in the RAM middle tier (tiered rerank only).
+    pub tier2: u64,
+    pub scanned: u64,
+}
+
+impl Index {
+    pub fn open(dir: &Path) -> Result<Self> {
+        let centroids: Vec<f32> = read_vec(&dir.join("centroids.f32"))?;
+        let block_off: Vec<u64> = read_vec(&dir.join("block_off.u64"))?;
+        let k = centroids.len() / PDIM;
+        anyhow::ensure!(block_off.len() == k + 1, "block_off.u64 does not match centroids");
+        Ok(Self {
+            k,
+            centroids,
+            block_off,
+            ids: Mapped::open(&dir.join("ids.u32")).context("ids.u32")?,
+            blocks: Mapped::open(&dir.join("blocks.bin")).context("blocks.bin")?,
+            tier2: match dir.join("tier2.bin").exists() {
+                false => None,
+                true => Some((
+                    Tier2 { sigma: read_vec(&dir.join("tier2.sigma"))? },
+                    Mapped::open(&dir.join("tier2.bin"))?,
+                    read_vec(&dir.join("tier2.norm"))?,
+                )),
+            },
+            rabitq: match dir.join("rotation.f32").exists() {
+                false => None,
+                true => Some((Rotation::from_signs(read_vec(&dir.join("rotation.f32"))?), Mapped::open(&dir.join("factors.f32"))?)),
+            },
+        })
+    }
+
+    /// `q768` and `q256` must be unit length. Returns (score, corpus row), best first.
+    pub fn search(&self, corpus: &Corpus, q768: &[f32], q256: &[f32], p: &Params, s: &mut Scratch, t: &mut Timing) -> Vec<(f32, u32)> {
+        let t0 = std::time::Instant::now();
+        s.cent.resize(self.k, 0.0);
+        // One query against all centroids is a matrix-vector product: Accelerate runs it on AMX.
+        gemm_abt(q256, &self.centroids, 1, self.k, PDIM, &mut s.cent);
+        let mut probe = TopK::new(p.nprobe.min(self.k));
+        for (c, &v) in s.cent.iter().enumerate() {
+            probe.push(v, c as u32);
+        }
+        let t1 = std::time::Instant::now();
+
+        let ids = self.ids.as_slice();
+        let blocks = self.blocks.as_slice();
+        let mut cand: Vec<(f32, u32)> = match &self.rabitq {
+            Some((rot, factors)) => {
+                let rq = rabitq::Query::new(rot, q256);
+                let factors = factors.as_slice();
+                let mut cand = TopK::new(p.cand);
+                for &(cent, c) in probe.sorted() {
+                    let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
+                    let nb = b1 - b0;
+                    s.scores.resize(nb * BLOCK, 0);
+                    crate::lut::scan(&rq.lut, &blocks[b0 * BLOCK_BYTES..b1 * BLOCK_BYTES], &mut s.scores);
+                    t.scanned += (nb * BLOCK) as u64;
+                    let slots = ids[b0 * BLOCK..b1 * BLOCK].iter().zip(factors[b0 * BLOCK * 2..b1 * BLOCK * 2].chunks_exact(2));
+                    for (&sc, (&id, f)) in s.scores.iter().zip(slots) {
+                        if id != PAD {
+                            cand.push(rq.estimate(cent, f[0], sc), id);
+                        }
+                    }
+                }
+                cand.into_sorted()
+            }
+            None => {
+                let lut = Lut::new(q256);
+                let mut cand = TopK::new(p.cand);
+                for &(_, c) in probe.sorted() {
+                    let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);
+                    let nb = b1 - b0;
+                    s.scores.resize(nb * BLOCK, 0);
+                    crate::lut::scan(&lut, &blocks[b0 * BLOCK_BYTES..b1 * BLOCK_BYTES], &mut s.scores);
+                    t.scanned += (nb * BLOCK) as u64;
+                    let slot_ids = &ids[b0 * BLOCK..b1 * BLOCK];
+                    for (&sc, &id) in s.scores.iter().zip(slot_ids) {
+                        if cand.threshold().is_some_and(|th| sc <= th) || id == PAD {
+                            continue;
+                        }
+                        cand.push(sc, id);
+                    }
+                }
+                cand.into_sorted().into_iter().map(|(sc, id)| (lut.to_float(sc), id)).collect()
+            }
+        };
+        // A spilled vector can be reached through both of its clusters: keep its best estimate
+        // (with residual codes the two copies score differently). Rerank rows are random reads
+        // from a file much larger than cache, and visiting them in id order turns neighbouring
+        // candidates into neighbouring pages; prefetching a few rows ahead keeps several misses
+        // in flight instead of stalling on each one.
+        cand.sort_unstable_by(|a, b| a.1.cmp(&b.1).then(b.0.total_cmp(&a.0)));
+        cand.dedup_by_key(|x| x.1);
+        let t2 = std::time::Instant::now();
+
+        let mut out = TopK::new(p.k);
+        let mut t_mid = std::time::Instant::now();
+        let t2_start = |m: &mut std::time::Instant| {
+            let e = m.elapsed().as_nanos() as u64;
+            *m = std::time::Instant::now();
+            e
+        };
+        match p.rerank {
+            Rerank::None => cand.iter().for_each(|&(sc, id)| out.push(sc, id)),
+            Rerank::Full => {
+                s.w.clear();
+                s.w.extend(q768.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
+                let inv = 1.0 / query_i8(&s.w, &mut s.wq);
+                for (i, &(_, id)) in cand.iter().enumerate() {
+                    if let Some(&(_, ahead)) = cand.get(i + PREFETCH_ROWS) {
+                        prefetch(corpus.rerank_row(ahead));
+                    }
+                    out.push(dot_i8i8(&s.wq, corpus.rerank_row(id)) as f32 * inv, id);
+                }
+            }
+            Rerank::Tiered(r) if self.tier2.is_some() => {
+                let (t2, codes, norms) = self.tier2.as_ref().unwrap();
+                let codes = codes.as_slice();
+                let tables = t2.tables(q256);
+                let mut pre = TopK::new(r);
+                for &(_, id) in &cand {
+                    let c = &codes[id as usize * tier2::BYTES..][..tier2::BYTES];
+                    pre.push(tier2::score(&tables, c, norms[id as usize]), id);
+                }
+                let ids: Vec<u32> = pre.into_sorted().into_iter().map(|x| x.1).collect();
+                t.tier2 += t2_start(&mut t_mid);
+                s.rows.resize(ids.len() * DIM, 0);
+                corpus.ssd.read_rows(&ids, &mut s.rows);
+                s.w.clear();
+                s.w.extend(q768.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
+                let inv = 1.0 / query_i8(&s.w, &mut s.wq);
+                for (row, &id) in s.rows.chunks_exact(DIM).zip(&ids) {
+                    out.push(dot_i8i8(&s.wq, row) as f32 * inv, id);
+                }
+            }
+            Rerank::Prefix | Rerank::Tiered(_) => {
+                s.w.clear();
+                s.w.extend(q256.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
+                let inv = 1.0 / query_i8(&s.w, &mut s.wq);
+                let mut pre = TopK::new(match p.rerank {
+                    Rerank::Tiered(r) => r,
+                    _ => p.k,
+                });
+                for (i, &(_, id)) in cand.iter().enumerate() {
+                    if let Some(&(_, ahead)) = cand.get(i + PREFETCH_ROWS) {
+                        prefetch(&corpus.rerank_row(ahead)[..PDIM]);
+                    }
+                    let r = &corpus.rerank_row(id)[..PDIM];
+                    pre.push(dot_i8i8(&s.wq, r) as f32 * inv / corpus.norm256[id as usize], id);
+                }
+                if p.rerank == Rerank::Prefix {
+                    out = pre;
+                } else {
+                    s.w.clear();
+                    s.w.extend(q768.iter().zip(&corpus.quant.scale).map(|(&x, &sc)| x / sc));
+                    let inv = 1.0 / query_i8(&s.w, &mut s.wq);
+                    for (_, id) in pre.into_sorted() {
+                        out.push(dot_i8i8(&s.wq, corpus.rerank_row(id)) as f32 * inv, id);
+                    }
+                }
+            }
+        }
+        let t3 = std::time::Instant::now();
+        t.route += (t1 - t0).as_nanos() as u64;
+        t.scan += (t2 - t1).as_nanos() as u64;
+        t.rerank += (t3 - t2).as_nanos() as u64;
+        out.into_sorted()
+    }
+}
