@@ -186,7 +186,12 @@ pub fn soar_secondary(x: &[f32], cents: &[f32], cand: &[u32], lambda: f32) -> u3
 }
 
 /// Spherical k-means: centroids stay unit length, assignment by inner product.
-pub fn kmeans(sample: &[f32], k: usize, iters: usize, seed: u64) -> Vec<f32> {
+/// Spherical k-means (Lloyd on unit vectors). With `balance = Some(r)`, every iteration but the
+/// last two also splits clusters holding more than r× the mean: the centroid of the smallest
+/// cluster moves onto a random member of the oversized one, and the next Lloyd step divides the
+/// members between the two. Assignment stays nearest-centroid, so routing is unaffected; only
+/// the centroids move. This is the split step of SPANN and SPFresh, run during training.
+pub fn kmeans(sample: &[f32], k: usize, iters: usize, seed: u64, balance: Option<f32>) -> Vec<f32> {
     let n = sample.len() / PDIM;
     let mut rng = Rng::new(seed);
     let mut cents: Vec<f32> = (0..k).flat_map(|_| sample[rng.below(n) * PDIM..][..PDIM].to_vec()).collect();
@@ -210,9 +215,42 @@ pub fn kmeans(sample: &[f32], k: usize, iters: usize, seed: u64) -> Vec<f32> {
             }
         }
         let max = counts.iter().max().unwrap();
-        eprintln!("kmeans iter {it}: largest cluster {max}, empty {empty}");
+        let split = match balance {
+            Some(r) if it + 2 < iters => split_large(sample, &a, &counts, &mut cents, r, &mut rng),
+            _ => 0,
+        };
+        eprintln!("kmeans iter {it}: largest cluster {max}, empty {empty}, split {split}");
     }
     cents
+}
+
+/// Pairs clusters above `r`× the mean size (largest first) with the smallest clusters, and
+/// moves each small centroid onto a random member of its large partner. Returns the number of
+/// splits. A small cluster is only given up if it is below half the mean, so the
+/// fix cannot create a new imbalance.
+fn split_large(sample: &[f32], a: &[u32], counts: &[usize], cents: &mut [f32], r: f32, rng: &mut Rng) -> usize {
+    let k = counts.len();
+    let mean = a.len() as f32 / k as f32;
+    let mut order: Vec<usize> = (0..k).collect();
+    order.sort_unstable_by_key(|&c| std::cmp::Reverse(counts[c]));
+    let large: Vec<usize> = order.iter().copied().take_while(|&c| counts[c] as f32 > r * mean).collect();
+    let small: Vec<usize> = order.iter().rev().copied().take_while(|&c| (counts[c] as f32) < 0.5 * mean).take(large.len()).collect();
+    if small.is_empty() {
+        return 0;
+    }
+    let mut members: Vec<Vec<u32>> = vec![Vec::new(); k];
+    let is_large: std::collections::HashSet<usize> = large.iter().copied().take(small.len()).collect();
+    for (i, &c) in a.iter().enumerate() {
+        if is_large.contains(&(c as usize)) {
+            members[c as usize].push(i as u32);
+        }
+    }
+    for (&big, &tiny) in large.iter().zip(&small) {
+        let m = &members[big];
+        let pick = m[rng.below(m.len())] as usize;
+        cents[tiny * PDIM..][..PDIM].copy_from_slice(&sample[pick * PDIM..][..PDIM]);
+    }
+    small.len()
 }
 
 pub struct BuildStats {
@@ -227,7 +265,7 @@ type ResSlot = ([u8; CODE_BYTES], [f32; 2]);
 /// With `soar_lambda` set, every vector is also spilled into a SOAR secondary cluster. With
 /// `rabitq`, each slot holds the RaBitQ code of the vector's residual to that slot's cluster
 /// (so the two SOAR copies get different codes) instead of the global sign code.
-pub fn build(corpus: &Corpus, out: &Path, k: usize, sample_n: usize, iters: usize, soar_lambda: Option<f32>, rabitq: bool) -> Result<BuildStats> {
+pub fn build(corpus: &Corpus, out: &Path, k: usize, sample_n: usize, iters: usize, balance: Option<f32>, soar_lambda: Option<f32>, rabitq: bool) -> Result<BuildStats> {
     std::fs::create_dir_all(out)?;
     let n = corpus.n;
     // Assign in chunks so the reconstructed prefixes never all sit in RAM at once.
@@ -238,7 +276,7 @@ pub fn build(corpus: &Corpus, out: &Path, k: usize, sample_n: usize, iters: usiz
     for row in sample.chunks_exact_mut(PDIM) {
         corpus.prefix_f32(rng.below(n) as u32, row);
     }
-    let cents = kmeans(&sample, k, iters, 7);
+    let cents = kmeans(&sample, k, iters, 7, balance);
     let t2 = Tier2::fit(&sample);
     write_vec(&out.join("tier2.sigma"), &t2.sigma)?;
     drop(sample);
@@ -688,6 +726,24 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_moves_smallest_centroid_into_largest_cluster() {
+        // 3 clusters: 0 holds 8 of 10 points, 1 holds 2, 2 holds none.
+        let mut sample = vec![0f32; 10 * PDIM];
+        for (i, row) in sample.chunks_exact_mut(PDIM).enumerate() {
+            row[i] = 1.0;
+        }
+        let a = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1];
+        let counts = [8, 2, 0];
+        let mut cents = vec![0f32; 3 * PDIM];
+        let n = split_large(&sample, &a, &counts, &mut cents, 2.0, &mut Rng::new(1));
+        assert_eq!(n, 1);
+        let moved = &cents[2 * PDIM..3 * PDIM];
+        let member = (0..8).any(|i| moved == &sample[i * PDIM..(i + 1) * PDIM]);
+        assert!(member, "new centroid must be a member of the oversized cluster");
+        assert!(cents[PDIM..2 * PDIM].iter().all(|&x| x == 0.0), "cluster 1 is not below half the mean");
+    }
 
     #[test]
     fn prune_threshold_is_mth_lower_bound() {

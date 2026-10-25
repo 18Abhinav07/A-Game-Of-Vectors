@@ -112,6 +112,15 @@ Ablations that show where recall comes from:
   0.859. At about 150k it is 0.845 against 0.815.
 - **Middle tier**: 2-bit codes of the 256-d prefix (64 B/vector, in RAM) choose the 200 rows
   worth fetching from SSD with no recall loss (0.8828 vs 0.8831). See DESIGN.md D9.
+- **Balanced k-means** (D14, a negative result): splitting large clusters during training barely
+  changes the corpus skew (max stored cluster 45k → 42k at r = 1.5) and gives no recall at equal
+  scan.
+
+  | index | 16:500:full R@10 / scanned | 32:500:full | 64:500:tiered200 |
+  |---|---|---|---|
+  | baseline | 0.8464 / 151k | 0.8876 / 305k | 0.9191 / 623k |
+  | `--balance 2.0` | 0.8521 / 154k | 0.8885 / 309k | 0.9188 / 619k |
+  | `--balance 1.5` | 0.8525 / 170k | 0.8905 / 341k | 0.9197 / 683k |
 
 ### Latency and throughput (warm, index resident)
 Single-thread latency is measured over all 2,677 queries. QPS is 12 threads for 10 s.
