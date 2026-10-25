@@ -22,7 +22,8 @@ pub struct Corpus {
     pub n: usize,
     pub codes: Mapped<u8>,
     pub rerank: Mapped<i8>,
-    pub norm256: Vec<f32>,
+    /// Mapped, not read: only the prefix rerank and the flat baselines touch it.
+    pub norm256: Mapped<f32>,
     pub quant: Int8Quantizer,
     docid_bytes: Mapped<u8>,
     docid_off: Mapped<u64>,
@@ -72,9 +73,9 @@ impl RowReader {
 
 impl Corpus {
     pub fn open(dir: &Path) -> Result<Self> {
-        let norm256: Vec<f32> = read_vec(&dir.join("norm256.f32"))?;
+        let norm256: Mapped<f32> = Mapped::open(&dir.join("norm256.f32"))?;
         let c = Self {
-            n: norm256.len(),
+            n: norm256.as_slice().len(),
             codes: Mapped::open(&dir.join("codes.bin"))?,
             rerank: Mapped::open(&dir.join("rerank.i8"))?,
             quant: Int8Quantizer { scale: read_vec(&dir.join("quant.f32"))? },
@@ -375,7 +376,7 @@ pub struct Index {
     pub ids: Mapped<u32>,
     pub blocks: Mapped<u8>,
     /// The RAM middle tier, if this index was built with one.
-    pub tier2: Option<(Tier2, Mapped<u8>, Vec<f32>)>,
+    pub tier2: Option<(Tier2, Mapped<u8>, Mapped<f32>)>,
     /// RaBitQ residual codes: the rotation and `[mul, err]` per slot, if built with them.
     pub rabitq: Option<(Rotation, Mapped<f32>)>,
     /// SSD mode (D13): when set, probed clusters are read from postings.bin instead of the
@@ -485,7 +486,7 @@ impl Index {
                 true => Some((
                     Tier2 { sigma: read_vec(&dir.join("tier2.sigma"))? },
                     Mapped::open(&dir.join("tier2.bin"))?,
-                    read_vec(&dir.join("tier2.norm"))?,
+                    Mapped::open(&dir.join("tier2.norm"))?,
                 )),
             },
             rabitq: match dir.join("rotation.f32").exists() {
@@ -636,7 +637,7 @@ impl Index {
                 let mut pre = TopK::new(r);
                 for &(_, id) in &cand {
                     let c = &codes[id as usize * tier2::BYTES..][..tier2::BYTES];
-                    pre.push(tier2::score(&tables, c, norms[id as usize]), id);
+                    pre.push(tier2::score(&tables, c, norms.as_slice()[id as usize]), id);
                 }
                 let ids: Vec<u32> = pre.into_sorted().into_iter().map(|x| x.1).collect();
                 t.tier2 += t2_start(&mut t_mid);
@@ -662,7 +663,7 @@ impl Index {
                         prefetch(&corpus.rerank_row(ahead)[..PDIM]);
                     }
                     let r = &corpus.rerank_row(id)[..PDIM];
-                    pre.push(dot_i8i8(&s.wq, r) as f32 * inv / corpus.norm256[id as usize], id);
+                    pre.push(dot_i8i8(&s.wq, r) as f32 * inv / corpus.norm256.as_slice()[id as usize], id);
                 }
                 if p.rerank == Rerank::Prefix {
                     out = pre;
