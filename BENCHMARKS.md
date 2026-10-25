@@ -65,6 +65,24 @@ At 32 probes, recall is now within 1.6 points of the routing ceiling (0.909). Th
 loss is mostly routing, which SOAR and more probes address. Scan time rises 6%
 (0.554 vs 0.521 ms).
 
+### Bound-driven rerank (DESIGN.md D11)
+RaBitQ index, 32 probes, 1000 candidates unless noted. *reranked* is rows per query after SOAR
+dedup and pruning.
+
+| config | R@10 | reranked |
+|---|---|---|
+| full rerank, no pruning | 0.8936 | 850 |
+| pruned at rank 10, w = 1.0 (ε0 = 1.9) | 0.8936 | 612 |
+| pruned at rank 10, w = 0.8 | 0.8926 | 446 |
+| pruned at rank 10, w = 0.7 | 0.8901 | 346 |
+| fixed 400 candidates | 0.8848 | 338 |
+| pruned at rank 10, w = 0.6 | 0.8822 | 243 |
+| fixed 250 candidates | 0.8737 | 211 |
+| pruned at rank 10, w = 0.4 | 0.8277 | 90 |
+| 2-bit tier → 200, no pruning | 0.8929 | 850 |
+| 2-bit tier → 200, pruned at rank 10, w = 1.0 | 0.8929 | 612 |
+| 64 probes, 500 cand, 2-bit tier → 200, pruned w = 1.0 | 0.9191 | 362 |
+
 Ablations that show where recall comes from:
 - **LUT vs Hamming**: scoring all 18.4M codes, then reranking 1000, gives R@10 0.949 with the
   asymmetric LUT and 0.884 with Hamming distance. The float query is worth 6.5 points.

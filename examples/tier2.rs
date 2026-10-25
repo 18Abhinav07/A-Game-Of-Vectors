@@ -37,7 +37,7 @@ fn main() {
     let nq = q768.len() / DIM;
     let gt: Vec<u32> = read_vec(&ing.join("gt768.ids")).unwrap();
     let gk = gt.len() / nq;
-    let p = Params { nprobe: 32, cand: 1000, rerank: Rerank::None, k: 1000 };
+    let p = Params { nprobe: 32, cand: 1000, rerank: Rerank::None, k: 1000, prune: None };
     let w768 = |q: &[f32]| corpus.quant.query_weights(q);
 
     let cands: Vec<Vec<u32>> = (0..nq)
