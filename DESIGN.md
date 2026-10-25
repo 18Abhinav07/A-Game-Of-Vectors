@@ -146,6 +146,21 @@ is outranked by m others. The rest go to rerank (`search ... 32:1000:full:b10x0.
   pruning removes the rows neither tier needs to see.
 - Global sign codes carry no bound (width ∞), so pruning is a no-op on those indexes.
 
+### D12. Query-aware probing: nprobe set per query by centroid scores
+A fixed nprobe scans 32 clusters for a query whose neighbours sit in one dominant cluster just
+as it does for one spread over many. SPANN (Chen et al., NeurIPS 2021) instead probes a cluster
+only if it is nearly as close as the closest one. The inner-product version: of the top-nprobe
+clusters, scan those with ⟨q,c⟩ ≥ ⟨q,c₁⟩ − Δ, with nprobe as the cap (`256:500:full:p0.16`).
+It costs nothing at query time, since the centroid scores already exist.
+- On M1 (4096 clusters, RaBitQ, 500 candidates, full rerank) it beats fixed nprobe at every
+  scan budget from 260k vectors up: +0.2 points at 260k, +0.8 at 376k, +0.5 at 700k–925k.
+- Δ = 0.16 reaches 0.9387 with 925k vectors scanned, against 0.9404 for 128 fixed probes at
+  1.26M (27% fewer). Δ = 0.18 beats 128 probes outright (0.9448) with 7% fewer vectors.
+- Small Δ collapses (0.62 at Δ = 0.02), because many queries then scan one or two clusters.
+  A margin is useful only well above the routing noise.
+- Per-query work now varies, so p99 matters more than mean; the M2 bench reports both. The
+  margin depends on how tightly the centroids pack, so it is re-tuned at 16384 clusters.
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.
