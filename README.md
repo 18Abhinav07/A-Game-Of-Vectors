@@ -31,6 +31,7 @@ and fixes that.
   candidates are worth reranking (28% fewer rows with no loss, 48% for −0.1 pt), and a
   centroid-score margin decides how many clusters each query probes (R@10 0.939 vs 0.940 for
   fixed 128 probes, with 27% less scan).
+- **Measured against FAISS** (IVF-PQ, fast-scan PQ, IVF-RaBitQ) at the same code budget.
 - **Integer rerank** on `sdot` (int8 query × int8 row) and centroid routing on AMX via
   Accelerate.
 - **One-pass streaming ingest** at 232k rows/s. Exact ground truth is computed with sgemm while
@@ -57,6 +58,11 @@ query set; at 256 probes, within 0.006.
 | + RaBitQ residual codes | 0.894 | 0.78 ms | 13.5k (at 500 cand) |
 | + 2-bit tier, 200 rows from SSD | 0.893 | | |
 | ceiling of the codes (exhaustive scan + rerank): Exa's sign codes → RaBitQ | 0.949 → 0.981 | | |
+
+**Against FAISS** on the same slice, with the same 32 B budget and the same int8 rerank: for
+R@10 ≈ 0.885, FAISS's fastest IVF index (`IVF4096,PQ64x4fs`) needs 128 probes and 1.54 ms just
+to scan the codes. sieve needs 32 probes and 0.63 ms end to end, so it is 2.4× faster, mostly
+because of SOAR. FAISS's `IVF,RaBitQ` reaches 0.903 at 128 probes; sieve reaches 0.919 at 64.
 
 Full tables, ablations and kernel numbers: [BENCHMARKS.md](BENCHMARKS.md). Every design decision
 and the evidence for it: [DESIGN.md](DESIGN.md).
@@ -93,7 +99,8 @@ What a real service would still need, roughly in order:
 - **Tail latency**: margin probing has a long p99 (~51 ms) because flat-score queries probe up to
   the cap. A per-query byte budget would bound it.
 - **Observability**: per-stage histograms, cache and I/O metrics exported, not just bench JSON.
-- **Baselines**: FAISS IVF-PQ and HNSW on the same slice, at equal recall.
+- **Graph baselines**: FAISS IVF-PQ, fast-scan and RaBitQ are measured. HNSW/DiskANN on the
+  same slice is not.
 
 ## Reproduce
 ```sh
