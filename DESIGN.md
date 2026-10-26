@@ -1,6 +1,6 @@
 # sieve: design
 
-A Rust vector search engine that reproduces, measures and extends the design Exa published in
+A vector search engine written from scratch in Rust, inspired by the architecture Exa described in
 [How we built a web-scale vector database](https://exa.ai/blog/building-web-scale-vector-db)
 (Dec 2024): Matryoshka truncation, 1-bit document codes, asymmetric lookup-table scoring,
 IVF clustering, rescoring with uncompressed vectors, and inverted-index filters.
