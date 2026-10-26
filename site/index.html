@@ -46,6 +46,25 @@ a { color: inherit; }
 .nav-links .gh svg { width: 16px; height: 16px; }
 @media (max-width: 720px) { .nav-links a:not(.gh) { display: none; } }
 
+/* loader */
+#loader { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--paper); transition: opacity .6s var(--ease), visibility .6s; }
+#loader svg { width: 44px; height: 44px; overflow: visible; }
+#loader circle { transform-box: fill-box; transform-origin: center; }
+#loader .r1 circle { animation: sift 1.4s var(--ease) infinite; }
+#loader .r2 circle { animation: sift 1.4s var(--ease) .18s infinite; }
+#loader .q { animation: drop 1.4s var(--ease) .36s infinite; }
+@keyframes sift { 0%, 100% { opacity: .14; } 35% { opacity: .7; } }
+@keyframes drop { 0%, 100% { transform: translateY(-3px); opacity: .45; } 35% { transform: none; opacity: 1; } }
+html.ready #loader { opacity: 0; visibility: hidden; }
+.hero-foot > * { transition: opacity 1s var(--ease), transform 1s var(--ease); }
+.hero-foot > :nth-child(2) { transition-delay: .12s; }
+.hero-foot > :nth-child(3) { transition-delay: .24s; }
+html:not(.ready) .hero-foot > * { opacity: 0; transform: translateY(20px); }
+@media (prefers-reduced-motion: reduce) {
+  #loader *, #loader { animation: none !important; transition: none !important; }
+  .hero-foot > * { transition: none; }
+}
+
 /* hero */
 .hero { position: sticky; top: 0; height: 100vh; height: 100svh; overflow: hidden; z-index: 0; }
 .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; transform-origin: 50% 40%; will-change: transform, opacity; }
@@ -228,9 +247,10 @@ footer { position: relative; z-index: 1; background: var(--paper); padding: 120p
   .statement .w { opacity: 1; }
 }
 </style>
+<noscript><style>#loader { display: none; } html:not(.ready) .hero-foot > * { opacity: 1; transform: none; }</style></noscript>
 </head>
 <body>
-
+<div id="loader" role="status" aria-label="Loading"><svg viewBox="0 0 32 32" aria-hidden="true"><g class="r1" fill="#0e1116"><circle cx="6" cy="8" r="2.1"/><circle cx="11" cy="8" r="2.1"/><circle cx="16" cy="8" r="2.1"/><circle cx="21" cy="8" r="2.1"/><circle cx="26" cy="8" r="2.1"/></g><g class="r2" fill="#0e1116"><circle cx="11" cy="15.5" r="2.1"/><circle cx="16" cy="15.5" r="2.1"/><circle cx="21" cy="15.5" r="2.1"/></g><circle class="q" cx="16" cy="24" r="3" fill="#2350f0"/></svg></div>
 <nav class="nav" id="nav"><div class="wrap">
   <a class="brand" href="#top" aria-label="sieve, back to top">
     <svg viewBox="0 0 32 32" aria-hidden="true"><g fill="#0e1116"><circle cx="6" cy="8" r="2.1" opacity=".22"/><circle cx="11" cy="8" r="2.1" opacity=".22"/><circle cx="16" cy="8" r="2.1" opacity=".22"/><circle cx="21" cy="8" r="2.1" opacity=".22"/><circle cx="26" cy="8" r="2.1" opacity=".22"/><circle cx="11" cy="15.5" r="2.1" opacity=".55"/><circle cx="16" cy="15.5" r="2.1" opacity=".55"/><circle cx="21" cy="15.5" r="2.1" opacity=".55"/></g><circle cx="16" cy="24" r="3" fill="#2350f0"/></svg>
@@ -666,6 +686,17 @@ legend("leg1", SSD); legend("leg2", SSD); legend("leg3", RAM);
 table("tbl-ssd", SSD, true); table("tbl-ram", RAM, false);
 
 document.querySelectorAll("[data-reveal]").forEach(el => io.observe(el));
+
+/* ---------- loader: hide once the fonts and the first hero frame are in ---------- */
+(() => {
+  const fonts = document.fonts ? Promise.all(['500 52px "Funnel Display"', '400 16px "Funnel Sans"'].map(f => document.fonts.load(f))).catch(() => 0) : 0;
+  const frame = new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const cap = new Promise(r => setTimeout(r, 2500));
+  Promise.race([Promise.all([fonts, frame]), cap]).then(() => {
+    document.documentElement.classList.add("ready");
+    setTimeout(() => document.getElementById("loader")?.remove(), 800);
+  });
+})();
 </script>
 </body>
 </html>
