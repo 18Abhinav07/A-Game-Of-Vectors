@@ -133,6 +133,11 @@ big-ann-benchmarks SPACEV-1B set instead, on the same 24 GB laptop with no cloud
 - **Against the NeurIPS'21 SSD track**: DiskANN reached R@10 0.901 at the 1,500 QPS bar on an
   8-vCPU, 64 GB machine. This laptop gets 0.906 at 420 QPS with 24 GB, about 28% of the
   throughput on 37% of the RAM, and the SSD's 3.6 GB/s is now the limit.
+- **Against DiskANN on this laptop** (D22, 10M SPACEV, same queries and ground truth): in RAM,
+  DiskANN is 45–50× faster at equal recall (0.903 at 146k QPS against sieve's 0.907 at 3.1k).
+  A flat IVF scores 120× more candidates than a graph walk. On SSD with ~0.5 GB of RAM each it
+  is close: sieve has ~3× lower latency (1.6 ms against 4.4–5.2 ms at 0.93, 12 threads) and
+  DiskANN ~1.3× more peak QPS with 48 threads (4.6k against 3.6k).
 
 ## Production gaps
 What a real service would still need, roughly in order:
@@ -147,8 +152,9 @@ What a real service would still need, roughly in order:
   io_uring with registered buffers would remove the thread pool.
 - **Observability**: per-stage histograms, cache and I/O metrics exported, not just bench JSON.
 - **Leaf balance at 1B**: the largest SPACEV leaf is 17× the mean, which sets the scan tail.
-- **Graph baselines**: FAISS IVF-PQ, fast-scan and RaBitQ are measured. HNSW/DiskANN on the
-  same slice is not.
+- **A graph router**: DiskANN, measured on the same laptop (D22), beats flat IVF by 45–50× in
+  RAM. Closing that needs SPANN's structure: many small posting lists behind a graph over the
+  centroids.
 
 ## Reproduce
 ```sh

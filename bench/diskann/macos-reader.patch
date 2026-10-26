@@ -1,0 +1,115 @@
+--- a/diskann-disk/src/search/provider/aligned_file_reader/factory/file.rs
++++ b/diskann-disk/src/search/provider/aligned_file_reader/factory/file.rs
+@@ -7,13 +7,15 @@
+ 
+ #[cfg(all(not(miri), target_os = "linux"))]
+ use crate::search::provider::aligned_file_reader::reader::LinuxAlignedFileReader;
+-#[cfg(any(miri, target_os = "macos"))]
++#[cfg(all(not(miri), target_os = "macos"))]
++use crate::search::provider::aligned_file_reader::reader::MacAlignedFileReader;
++#[cfg(miri)]
+ use crate::search::provider::aligned_file_reader::reader::StorageProviderAlignedFileReader;
+ #[cfg(all(not(miri), target_os = "windows"))]
+ use crate::search::provider::aligned_file_reader::reader::WindowsAlignedFileReader;
+ use crate::search::provider::aligned_file_reader::traits::AlignedReaderFactory;
+ 
+-#[cfg(any(miri, target_os = "macos"))]
++#[cfg(miri)]
+ use diskann_providers::storage::FileStorageProvider;
+ 
+ pub struct AlignedFileReaderFactory {
+@@ -44,9 +46,12 @@
+         For macOS: macOS does not support io_uring (Linux-only) or IOCompletionPort (Windows-only).
+         StorageProviderAlignedFileReader provides a cross-platform fallback implementation.
+          */
+-    #[cfg(any(miri, target_os = "macos"))]
++    #[cfg(miri)]
+     type AlignedReaderType = StorageProviderAlignedFileReader;
+ 
++    #[cfg(all(not(miri), target_os = "macos"))]
++    type AlignedReaderType = MacAlignedFileReader;
++
+     #[cfg(all(not(miri), target_os = "linux"))]
+     type AlignedReaderType = LinuxAlignedFileReader;
+ 
+@@ -54,7 +59,10 @@
+     type AlignedReaderType = WindowsAlignedFileReader;
+ 
+     fn build(&self) -> ANNResult<Self::AlignedReaderType> {
+-        #[cfg(any(miri, target_os = "macos"))]
++        #[cfg(all(not(miri), target_os = "macos"))]
++        return MacAlignedFileReader::new(self.file_path.as_str());
++
++        #[cfg(miri)]
+         return StorageProviderAlignedFileReader::new(
+             &FileStorageProvider,
+             self.file_path.as_str(),
+--- a/diskann-disk/src/search/provider/aligned_file_reader/mod.rs
++++ b/diskann-disk/src/search/provider/aligned_file_reader/mod.rs
+@@ -14,6 +14,8 @@
+ mod reader;
+ #[cfg(all(not(miri), target_os = "linux"))]
+ pub use reader::LinuxAlignedFileReader;
++#[cfg(all(not(miri), target_os = "macos"))]
++pub use reader::MacAlignedFileReader;
+ pub use reader::StorageProviderAlignedFileReader;
+ #[cfg(all(not(miri), target_os = "windows"))]
+ pub use reader::WindowsAlignedFileReader;
+--- a/diskann-disk/src/search/provider/aligned_file_reader/reader/mod.rs
++++ b/diskann-disk/src/search/provider/aligned_file_reader/reader/mod.rs
+@@ -12,6 +12,9 @@
+     } else if #[cfg(all(not(miri), target_os = "windows"))] {
+         mod windows;
+         pub use windows::WindowsAlignedFileReader;
++    } else if #[cfg(all(not(miri), target_os = "macos"))] {
++        mod macos;
++        pub use macos::MacAlignedFileReader;
+     }
+ }
+ 
+--- /dev/null
++++ b/diskann-disk/src/search/provider/aligned_file_reader/reader/macos.rs
+@@ -0,0 +1,43 @@
++/*
++ * Copyright (c) Microsoft Corporation.
++ * Licensed under the MIT license.
++ */
++
++//! macOS reader for benchmarking against the SSD: `F_NOCACHE` (the closest macOS analogue of
++//! `O_DIRECT`) and one `pread` per request. macOS has no io_uring, so a beam's reads are issued
++//! one after another; queue depth comes from running more search threads.
++
++use std::{
++    fs::File,
++    os::{fd::AsRawFd, unix::fs::FileExt},
++};
++
++use diskann::ANNResult;
++
++use crate::search::provider::aligned_file_reader::{traits::AlignedFileReader, AlignedRead, A512};
++
++pub struct MacAlignedFileReader {
++    file: File,
++}
++
++impl MacAlignedFileReader {
++    pub fn new(fname: &str) -> ANNResult<Self> {
++        let file = File::open(fname)?;
++        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
++            return Err(std::io::Error::last_os_error().into());
++        }
++        Ok(Self { file })
++    }
++}
++
++impl AlignedFileReader for MacAlignedFileReader {
++    type Alignment = A512;
++
++    fn read(&mut self, read_requests: &mut [AlignedRead<u8, A512>]) -> ANNResult<()> {
++        for r in read_requests {
++            let offset = r.offset();
++            self.file.read_exact_at(r.aligned_buf_mut(), offset)?;
++        }
++        Ok(())
++    }
++}

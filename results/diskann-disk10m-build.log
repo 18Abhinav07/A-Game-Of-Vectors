@@ -1,0 +1,64 @@
+######################
+# Running Job 1 of 1 #
+######################
+
+Disk Index Build
+         Data Type: int8
+         Data File: /Users/18abhinav07/Documents/exa/data/dann/base10m.i8bin
+          Distance: squared_l2
+               Dim: 100
+        Max Degree: 64
+           L Build: 100
+     Build Threads: 12
+Build RAM Limit GB: 12
+         PQ Chunks: 48
+      Quantization: full precision
+         Save Path: /Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48
+
+Build time: 210.648s
+
+Disk Index Search Phase
+           Queries: /Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin
+       Groundtruth: /Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin
+        Search List:20
+        Beam Width: 4
+           Recall@: 10
+           Threads: 12
+       Search Mode: graph
+          Distance: squared_l2
+Vector Filters File: none
+Num Nodes to Cache: none (defaults to 0)
+   Search IO Limit: none (defaults to `usize::MAX`)
+    Post Processor: none
+
+Search Stats
+Threads,          : 12
+Beam width,       : 4
+Recall at,        : 10
+Flat search,      : false
+Distance,         : squared_l2
+Vector filters,   : false
+Nodes to cache,   : None
+=======================================================================================================================================================
+ L KNN      QPS  Mean Latency   95% Latency  99.9 Latency    IOs    IO (us)   CPU (us)   PQ Preprocess (us)  Mean Comps  Mean Hops  Cache Hit %  Recall
+=======================================================================================================================================================
+20  10  24123.2       492.7us         768us        2404us   41.5    357.2us    133.0us                2.5us      2098.2       41.5         0.0%  88.948
+
+      211.24 real      2361.28 user        16.76 sys
+          5375475712  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              392602  page reclaims
+                   4  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+               24815  voluntary context switches
+              959232  involuntary context switches
+      23551047626143  instructions retired
+       8273162444736  cycles elapsed
+          5374906568  peak memory footprint

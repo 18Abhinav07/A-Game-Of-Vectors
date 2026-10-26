@@ -113,6 +113,11 @@ fn recall10(got: &[(f32, u32)], gt_ids: &[u32], gt_dist: &[f32]) -> f64 {
     got.iter().take(10).filter(|(_, id)| ok.contains(id)).count() as f64 / 10.0
 }
 
+/// Strict recall@10: only the first ten ground-truth ids count, as DiskANN's benchmark scores it.
+fn recall10_strict(got: &[(f32, u32)], gt_ids: &[u32]) -> f64 {
+    got.iter().take(10).filter(|(_, id)| gt_ids[..10].contains(id)).count() as f64 / 10.0
+}
+
 /// Of the true top-10 (with ties), the fraction inside the candidates, against recall@10.
 fn diagnose(index: &Index, qs: &[[i8; D]], gt_ids: &[u32], gt_dist: &[f32], gk: usize, p: &Params) {
     let (mut in_cand, mut exact) = (0.0, 0.0);
@@ -223,12 +228,13 @@ fn main() -> Result<()> {
                 let b0 = index.postings.stats.bytes_read.load(std::sync::atomic::Ordering::Relaxed);
                 let mut lat = Vec::with_capacity(nq);
                 let mut tm = Timing::default();
-                let mut rec = 0.0;
+                let (mut rec, mut strict) = (0.0, 0.0);
                 for (i, q) in qs.iter().enumerate() {
                     let t0 = Instant::now();
                     let got = index.search(q, &p, &mut tm);
                     lat.push(t0.elapsed().as_secs_f64() * 1e3);
                     rec += recall10(&got, &gt_ids[i * gk..][..gk], &gt_dist[i * gk..][..gk]);
+                    strict += recall10_strict(&got, &gt_ids[i * gk..][..gk]);
                 }
                 let mb = (index.postings.stats.bytes_read.load(std::sync::atomic::Ordering::Relaxed) - b0) as f64 / 1e6 / nq as f64;
                 if cold {
@@ -241,9 +247,10 @@ fn main() -> Result<()> {
                 let ms = |ns: u64| ns as f64 / 1e6 / n;
                 let (mean, p50, p99) = (lat.iter().sum::<f64>() / n, pct(&mut lat, 0.5), pct(&mut lat, 0.99));
                 println!(
-                    "{label} {cfg}{}: R@10 {:.4}, p50 {p50:.2} ms, p99 {p99:.2} ms, mean {mean:.2} (route {:.2}, scan {:.2}, io {:.2}, rerank {:.2}), {:.1} probes, {:.0} scanned, {mb:.1} MB/q, {qps:.0} QPS",
+                    "{label} {cfg}{}: R@10 {:.4} (strict {:.4}), p50 {p50:.2} ms, p99 {p99:.2} ms, mean {mean:.2} (route {:.2}, scan {:.2}, io {:.2}, rerank {:.2}), {:.1} probes, {:.0} scanned, {mb:.1} MB/q, {qps:.0} QPS",
                     if cold { " cold" } else { "" },
                     rec / n,
+                    strict / n,
                     ms(tm.route),
                     ms(tm.scan),
                     ms(tm.io_wait),
@@ -253,7 +260,7 @@ fn main() -> Result<()> {
                 );
                 log(&a.log, serde_json::json!({
                     "kind": "search", "label": label, "index": a.index, "gt": gt, "nq": nq, "nprobe": nprobe, "cand": cand, "refine": refine, "margin": margin, "bits": index.model.bits,
-                    "cold": cold, "cache_mb": cache_mb, "hot_bytes": hot_bytes, "recall10": rec / n, "p50_ms": p50, "p99_ms": p99, "mean_ms": mean,
+                    "cold": cold, "cache_mb": cache_mb, "hot_bytes": hot_bytes, "recall10": rec / n, "recall10_strict": strict / n, "p50_ms": p50, "p99_ms": p99, "mean_ms": mean,
                     "route_ms": ms(tm.route), "scan_ms": ms(tm.scan), "io_ms": ms(tm.io_wait), "rerank_ms": ms(tm.rerank),
                     "probes": tm.probes as f64 / n, "scanned": tm.scanned as f64 / n, "mb_per_query": mb, "qps": qps,
                 }))?;

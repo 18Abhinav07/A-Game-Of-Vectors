@@ -612,3 +612,65 @@ What this says:
 | `mincore` residency check | 0.46 µs (serialised) |
 | evicted file, 64 threads: mmap fault | 107 µs aggregate |
 | evicted file, 64 threads: `pread` | 9.3 µs aggregate (~100k IOPS) |
+
+## Head-to-head with DiskANN on the same laptop (DESIGN.md D22)
+Microsoft DiskANN (Rust, upstream `8a9ff2d`, R 64, L_build 100, α 1.2) and sieve on the first
+10M rows of SPACEV, the first 10,000 queries, the official 10M ground truth, on the same M4 Pro.
+Recall is strict R@10 (the first ten ground-truth ids; DiskANN's metric). Configs:
+`bench/diskann/*.json`; DiskANN's macOS SSD reader: `bench/diskann/macos-reader.patch`; logs:
+`results/diskann-*.log`, `results/diskann-h2h.jsonl`.
+
+### In RAM (12 threads)
+| | strict R@10 | QPS | mean latency | peak RSS | build |
+|---|---|---|---|---|---|
+| DiskANN L 20 | 0.871 | 178,377 | 53 µs | 7.2 GB (build + search) | 169 s |
+| DiskANN L 30 | 0.903 | 146,124 | 68 µs | | |
+| DiskANN L 60 | 0.943 | 88,314 | 118 µs | | |
+| DiskANN L 120 | 0.965 | 50,520 | 211 µs | | |
+| sieve 2-bit 16:100:1000 | 0.850 | 4,461 | 0.71 ms | 0.48 GB postings + 1.28 GB rows | 7 s |
+| sieve 2-bit 32:100:1000 | 0.907 | 3,139 | 0.92 ms | | |
+| sieve 2-bit 64:100:1000 | 0.945 | 1,848 | 1.36 ms | | |
+| sieve 2-bit 128:200:2000 | 0.974 | 839 | 2.53 ms | | |
+
+Per query at ~0.90 (one thread): sieve scores 221,801 codes (scan 0.69 ms) and reranks 100 rows
+(0.17 ms); DiskANN scores 1,840 vectors in 39 hops (52 µs).
+
+### On SSD, cold, ~0.5 GB of RAM each
+DiskANN: 48-byte PQ codes in RAM (0.48 GB), graph nodes read with `F_NOCACHE` `pread`, no node
+cache (100k cached nodes changed nothing measurable). Peak RSS 0.52 GB. sieve: the 0.48 GB of
+postings pinned (`--hot-gb 0.5 --cold`), rerank rows read cold.
+
+| | strict R@10 | QPS | mean latency | reads/query |
+|---|---|---|---|---|
+| DiskANN L 20, beam 1, 12 thr | 0.875 | 4,507 | 2.7 ms | 29.8 |
+| DiskANN L 20, beam 1, 48 thr | 0.875 | 7,781 | 6.1 ms | 29.8 |
+| DiskANN L 40, beam 1, 12 thr | 0.923 | 2,727 | 4.4 ms | 49.6 |
+| DiskANN L 40, beam 1, 48 thr | 0.923 | 4,606 | 10.4 ms | 49.6 |
+| DiskANN L 40, beam 4, 12 thr | 0.930 | 2,265 | 5.2 ms | 60.5 |
+| DiskANN L 40, beam 4, 48 thr | 0.930 | 3,913–4,662 | 10.3–12.2 ms | 60.5 |
+| DiskANN L 120, beam 4, 48 thr | 0.971 | 1,726 | 27.8 ms | 138 |
+| sieve 16:50:1000 | 0.839 | 3,574 | 1.04 ms | 50 |
+| sieve 32:50:1000 | 0.894 | 3,546 | 1.24 ms | 50 |
+| sieve 64:50:1000 | 0.930 | 3,313–3,583 | 1.58 ms | 50 |
+| sieve 64:100:1000 | 0.945 | 1,690–1,836 | 1.9 ms | 100 |
+
+What this says:
+- **In RAM, DiskANN is 45–50× faster at equal recall.** sieve is 9× cheaper per candidate and
+  scores 120× more of them. sieve uses ~4× less RAM and builds 24× faster.
+- **On SSD at matched RAM, neither wins outright.** sieve has ~3× lower latency at 12 threads (6–7× against DiskANN at 48), because one
+  parallel batch of reads replaces a chain of dependent hops. DiskANN has ~1.3× more peak QPS at 0.93 (~2× at 0.85–0.88),
+  because it drives the SSD harder (~228k reads/s against sieve's ~178k). At the same 12
+  threads, sieve is ahead on both.
+
+Reproduce (DiskANN cloned next to this repo at `8a9ff2d`):
+```
+git -C ../DiskANN apply $PWD/bench/diskann/macos-reader.patch
+(cd ../DiskANN && cargo build --release --package diskann-benchmark --features disk-index)
+python3 -I scripts/diskann-prep.py 10000000           # base, queries, ground truth as .bin
+D=../DiskANN/target/release/diskann-benchmark
+$D --quiet run --input-file bench/diskann/mem10m.json --output-file results/diskann-mem10m.json
+$D --quiet run --input-file bench/diskann/disk10m-build.json --output-file results/diskann-disk10m-build.json
+cargo build --release --examples
+scripts/diskann-cold.sh bench/diskann/disk10m-search.json results/diskann-disk10m-cold data/dann/disk10m_R64_L100_pq48
+scripts/diskann-cold.sh bench/diskann/disk10m-beam.json results/diskann-disk10m-beam data/dann/disk10m_R64_L100_pq48
+```

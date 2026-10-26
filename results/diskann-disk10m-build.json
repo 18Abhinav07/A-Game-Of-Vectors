@@ -1,0 +1,138 @@
+[
+  {
+    "input": {
+      "content": {
+        "search_phase": {
+          "beam_width": 4,
+          "distance": "squared_l2",
+          "groundtruth": "/Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin",
+          "num_nodes_to_cache": null,
+          "num_threads": 12,
+          "post_processor": null,
+          "queries": "/Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin",
+          "recall_at": 10,
+          "search_io_limit": null,
+          "search_list": [
+            20
+          ],
+          "search_mode": {
+            "adaptive_l": null,
+            "is_flat_search": false
+          },
+          "vector_filters_file": null
+        },
+        "source": {
+          "build_ram_limit_gb": 12.0,
+          "data": "/Users/18abhinav07/Documents/exa/data/dann/base10m.i8bin",
+          "data_type": "int8",
+          "dim": 100,
+          "disk-index-source": "Build",
+          "distance": "squared_l2",
+          "l_build": 100,
+          "max_degree": 64,
+          "num_pq_chunks": 48,
+          "num_threads": 12,
+          "quantization_type": "FP",
+          "save_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        }
+      },
+      "type": "disk-index"
+    },
+    "results": {
+      "build": {
+        "build_time": 210648468,
+        "span_metrics": {
+          "spans": [
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 4.556561125,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.0498199462890625
+              },
+              "span_name": "DiskIndexBuild-PqConstruction"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 204.39375425,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 5.0063018798828125
+              },
+              "span_name": "DiskIndexBuild-InmemIndexBuild"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 1.6960689169999998,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 5.0063018798828125
+              },
+              "span_name": "DiskIndexBuild-DiskLayout"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 210.649714
+              },
+              "span_name": "disk-index-build"
+            }
+          ]
+        }
+      },
+      "search": {
+        "beam_width": 4,
+        "distance": "squared_l2",
+        "is_flat_search": false,
+        "num_nodes_to_cache": null,
+        "num_threads": 12,
+        "recall_at": 10,
+        "search_results_per_l": [
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 2098.1599,
+            "mean_cpu_time": 133.0343,
+            "mean_hops": 41.4984,
+            "mean_io_time": 357.189,
+            "mean_ios": 41.4984,
+            "mean_latency": 492.7485,
+            "mean_pq_preprocess_time": 2.5252,
+            "p95_latency": 768,
+            "p999_latency": 2404,
+            "qps": 24123.1796875,
+            "recall": 88.947998046875,
+            "search_l": 20
+          }
+        ],
+        "span_metrics": {
+          "spans": [
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 0.084385917,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 5.0063018798828125
+              },
+              "span_name": "search_disk_index-index_loaded"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 0.417294
+              },
+              "span_name": "search-with-L=20-bw=4"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 0.417491916,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 5.0063018798828125
+              },
+              "span_name": "search_disk_index-search_completed"
+            }
+          ]
+        },
+        "uses_vector_filters": false
+      }
+    }
+  }
+]
