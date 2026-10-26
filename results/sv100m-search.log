@@ -1,0 +1,9 @@
+14336 leaves, postings 2.83 GB, 5000 queries
+100M 32:500: R@10 0.8636, p50 1.27 ms, p99 3.66 ms, mean 1.39 (route 0.05, scan 0.38, io 0.03, rerank 0.92), 233488 scanned, 6.5 MB/q, 1353 QPS
+100M 64:500: R@10 0.8988, p50 2.15 ms, p99 3.59 ms, mean 2.18 (route 0.06, scan 0.73, io 0.04, rerank 1.34), 460936 scanned, 12.9 MB/q, 842 QPS
+100M 64:1000: R@10 0.9111, p50 3.46 ms, p99 6.72 ms, mean 3.56 (route 0.06, scan 0.75, io 0.04, rerank 2.70), 460936 scanned, 12.9 MB/q, 414 QPS
+100M 128:1000: R@10 0.9377, p50 4.95 ms, p99 11.94 ms, mean 5.51 (route 0.08, scan 1.55, io 0.09, rerank 3.77), 913984 scanned, 25.6 MB/q, 374 QPS
+100M 256:2000: R@10 0.9653, p50 7.42 ms, p99 10.63 ms, mean 7.55 (route 0.08, scan 2.91, io 0.05, rerank 4.47), 1814869 scanned, 50.8 MB/q, 230 QPS
+14336 leaves, postings 2.83 GB, 2000 queries
+100M 64:1000 cold: R@10 0.9096, p50 14.23 ms, p99 18.52 ms, mean 14.49 (route 0.06, scan 1.10, io 3.69, rerank 9.62), 463463 scanned, 13.0 MB/q, 56 QPS
+100M 128:1000 cold: R@10 0.9381, p50 20.29 ms, p99 42.58 ms, mean 25.00 (route 0.07, scan 1.97, io 9.45, rerank 13.49), 918324 scanned, 25.7 MB/q, 51 QPS
