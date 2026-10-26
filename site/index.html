@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>sieve · a billion vectors on a laptop</title>
+<meta name="description" content="sieve is a Rust vector search engine that searches 1 billion vectors on one 24 GB laptop with p99 latency under 12 ms, and matches Microsoft DiskANN from SSD at high recall.">
+<meta property="og:title" content="sieve · a billion vectors on a laptop">
+<meta property="og:description" content="1B vectors, one 24 GB laptop, p99 11.2 ms at recall@10 0.906. Head-to-head with DiskANN from SSD.">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg: #f6f8f9; --panel: #ffffff; --ink: #0f1a22; --ink-2: #4a5862; --ink-3: #6b7882;
+  --rule: #dbe2e7; --grid: #e9eef1; --track: #e3e9ed; --dot: #b9c4cc; --mesh: rgb(15 26 34 / 0.07);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --sans: "Geist", "Helvetica Neue", Arial, sans-serif;
+  --mono: "Geist Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #11161a; --panel: #171e23; --ink: #e8eef2; --ink-2: #a9b6bf; --ink-3: #87949d;
+  --rule: #2a343b; --grid: #1f272d; --track: #253037; --dot: #3a4750; --mesh: rgb(232 238 242 / 0.06);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; color-scheme: dark } }
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 17px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+h1, h2, h3 { margin: 0; font-weight: 600; text-wrap: balance; }
+p { margin: 0; max-width: 64ch; color: var(--ink-2); }
+p strong { color: var(--ink); font-weight: 600; }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--s1); outline-offset: 3px; border-radius: 4px; }
+.num, table, .tick { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* nav */
+nav { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid transparent; transition: border-color .2s; }
+nav.scrolled { border-bottom-color: var(--rule); }
+nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 600; font-size: 19px; letter-spacing: -0.02em; }
+.brand svg { width: 28px; height: 28px; }
+.links { display: flex; gap: 26px; font-size: 15px; }
+.links a { text-decoration: none; color: var(--ink-2); }
+.links a:hover { color: var(--ink); }
+@media (max-width: 560px) { .links a:not(.gh) { display: none; } }
+
+/* hero */
+.hero { position: relative; padding: 56px 0 72px; }
+.hero::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(var(--mesh) 1.2px, transparent 1.3px); background-size: 18px 18px; mask-image: linear-gradient(to bottom, #000 30%, transparent); -webkit-mask-image: linear-gradient(to bottom, #000 30%, transparent); pointer-events: none; }
+.hero .wrap { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); gap: 56px; align-items: center; }
+@media (max-width: 920px) { .hero .wrap { grid-template-columns: minmax(0, 1fr); gap: 40px; } }
+h1 { font-size: clamp(40px, 5.6vw, 66px); line-height: 1.02; letter-spacing: -0.035em; font-weight: 600; }
+h1 .q { color: var(--ink-3); }
+.hero-copy { display: flex; flex-direction: column; gap: 26px; }
+.lede { font-size: 18px; }
+.lede a { color: var(--ink); text-underline-offset: 3px; text-decoration-color: var(--rule); }
+.lede a:hover { text-decoration-color: var(--ink); }
+.spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--rule); }
+.spec div { padding: 14px 0; border-bottom: 1px solid var(--rule); display: flex; flex-direction: column; gap: 2px; }
+.spec div:nth-child(odd) { padding-right: 16px; }
+.spec div:nth-child(even) { padding-left: 16px; border-left: 1px solid var(--rule); }
+.spec dt { font-size: 13px; color: var(--ink-3); }
+.spec dd { margin: 0; font: 500 22px/1.2 var(--mono); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px; border-radius: 10px; font-size: 15px; font-weight: 500; text-decoration: none; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); }
+.btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn svg { width: 18px; height: 18px; }
+.btn:hover { border-color: var(--ink-3); }
+
+/* the query animation */
+.demo { background: var(--panel); border: 1px solid var(--rule); border-radius: 18px; padding: 14px; box-shadow: 0 1px 0 var(--rule), 0 24px 60px -30px rgb(15 26 34 / 0.25); }
+.demo-head { display: flex; justify-content: space-between; align-items: center; padding: 2px 4px 10px; font-size: 13px; color: var(--ink-3); }
+.demo-head button { font: inherit; color: var(--ink-2); background: none; border: 1px solid var(--rule); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+.demo-head button:hover { color: var(--ink); border-color: var(--ink-3); }
+.stage { position: relative; aspect-ratio: 1.3; border-radius: 10px; overflow: hidden; background: var(--bg); }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.clock { position: absolute; right: 12px; bottom: 10px; font: 500 13px var(--mono); color: var(--ink-2); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 3px 8px; font-variant-numeric: tabular-nums; }
+.steps { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; counter-reset: s; }
+@media (max-width: 640px) { .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.steps li { counter-increment: s; padding: 10px 10px 8px; border-radius: 10px; border: 1px solid var(--rule); font-size: 12.5px; line-height: 1.4; color: var(--ink-3); transition: border-color .3s, color .3s, background .3s; }
+.steps li b { display: block; color: var(--ink-2); font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+.steps li b::before { content: counter(s) "  "; font-family: var(--mono); font-weight: 500; color: var(--ink-3); }
+.steps li.on { border-color: var(--s1); color: var(--ink-2); background: color-mix(in srgb, var(--s1) 6%, var(--panel)); }
+.steps li.on b { color: var(--ink); }
+
+/* sections */
+section.block { padding: 88px 0; border-top: 1px solid var(--rule); }
+.head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px 56px; align-items: end; margin-bottom: 36px; }
+@media (max-width: 860px) { .head { grid-template-columns: minmax(0, 1fr); } }
+.kicker { font-size: 15px; color: var(--s1); font-weight: 500; margin-bottom: 10px; }
+h2 { font-size: clamp(28px, 3.6vw, 42px); line-height: 1.08; letter-spacing: -0.03em; }
+
+/* budget strip */
+.budget { background: var(--panel); border: 1px solid var(--rule); border-radius: 16px; padding: 28px 28px 20px; }
+.brow { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 24px; align-items: center; padding: 10px 0; }
+.brow + .brow { border-top: 1px solid var(--grid); }
+.blabel { font-size: 13px; line-height: 1.4; color: var(--ink-3); }
+.blabel b { display: block; font: 500 15px var(--mono); color: var(--ink); }
+.btrack { position: relative; height: 30px; margin-right: 8px; }
+.btrack::before { content: ""; position: absolute; left: 0; right: 0; top: 14px; height: 2px; background: var(--track); border-radius: 1px; }
+.btrack::after { content: ""; position: absolute; top: -10px; bottom: -10px; left: 100%; border-left: 2px dashed var(--ink-3); }
+.brange { position: absolute; top: 12px; height: 6px; background: var(--s1); border-radius: 3px; transform-origin: left; }
+.bdot { position: absolute; top: 9px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--s1); box-shadow: 0 0 0 2px var(--panel); }
+.bdot.p50 { background: var(--panel); border: 2px solid var(--s1); }
+.bval { position: absolute; top: 6px; font: 500 12.5px var(--mono); color: var(--ink); white-space: nowrap; padding-left: 14px; }
+.baxis { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 24px; margin-top: 8px; }
+.ticks { position: relative; height: 18px; font-size: 11.5px; color: var(--ink-3); margin-right: 8px; }
+.ticks span { position: absolute; transform: translateX(-50%); }
+.ticks span:first-child { transform: none; }
+.ticks span:last-child { transform: translateX(-100%); color: var(--ink); font-weight: 500; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13.5px; color: var(--ink-2); align-items: center; margin-top: 16px; }
+.key { display: inline-flex; align-items: center; gap: 8px; }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: var(--s1); }
+.sw.hollow { background: transparent; border: 2px solid var(--s1); }
+.note { font-size: 14px; margin-top: 18px; color: var(--ink-3); }
+@media (max-width: 680px) {
+  .budget { padding: 20px 16px 16px; }
+  .brow, .baxis { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .baxis > div:first-child { display: none; }
+  .bval { font-size: 11.5px; }
+}
+
+/* charts */
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+@media (max-width: 880px) { .charts { grid-template-columns: minmax(0, 1fr); } }
+figure { margin: 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 16px; padding: 22px 20px 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+figcaption b { display: block; font-size: 16px; font-weight: 600; }
+figcaption span { font-size: 13.5px; color: var(--ink-3); }
+figure .legend { margin-top: 0; }
+.plot { position: relative; width: 100%; }
+.plot svg { display: block; width: 100%; overflow: visible; }
+.plot text { font-family: var(--mono); font-size: 11px; fill: var(--ink-3); }
+.plot text.lab { font-family: var(--sans); font-size: 12.5px; font-weight: 600; fill: var(--ink); paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+.plot text.axt { font-family: var(--sans); font-size: 12px; fill: var(--ink-3); }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 9px 11px; font-size: 12.5px; line-height: 1.5; color: var(--ink); box-shadow: 0 8px 24px rgb(0 0 0 / 0.14); white-space: nowrap; z-index: 2; }
+.tip .t { font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.tip .r { font-family: var(--mono); color: var(--ink-2); font-size: 12px; }
+.callout { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin-top: 20px; }
+@media (max-width: 760px) { .callout { grid-template-columns: minmax(0, 1fr); } }
+.callout div { border-top: 2px solid var(--ink); padding-top: 14px; }
+.callout b { display: block; font: 500 28px/1.15 var(--mono); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.callout span { font-size: 14px; color: var(--ink-2); }
+details { margin-top: 18px; font-size: 14px; color: var(--ink-2); }
+summary { cursor: pointer; width: max-content; }
+.tbl { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; font-size: 12.5px; min-width: 100%; }
+th, td { text-align: right; padding: 6px 12px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; padding-left: 0; }
+th { color: var(--ink-3); font-weight: 500; }
+figure table { font-size: 13px; }
+figure td:first-child { font-family: var(--sans); color: var(--ink-2); }
+
+/* method */
+.method { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px 36px; padding: 0; margin: 0; list-style: none; }
+@media (max-width: 860px) { .method { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .method { grid-template-columns: minmax(0, 1fr); } }
+.method li { font-size: 15px; color: var(--ink-2); }
+.method li b { display: block; color: var(--ink); font-weight: 600; margin-bottom: 4px; }
+code { font-family: var(--mono); font-size: 0.9em; }
+footer { border-top: 1px solid var(--rule); padding: 32px 0 48px; font-size: 14px; color: var(--ink-3); }
+footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 24px; align-items: center; }
+footer a { color: var(--ink-2); }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<nav id="nav"><div class="wrap">
+  <a class="brand" href="#" aria-label="sieve home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--ink)"/><g fill="var(--bg)"><circle cx="6" cy="9" r="2" opacity=".35"/><circle cx="11" cy="9" r="2" opacity=".35"/><circle cx="16" cy="9" r="2" opacity=".35"/><circle cx="21" cy="9" r="2" opacity=".35"/><circle cx="26" cy="9" r="2" opacity=".35"/><circle cx="11" cy="16" r="2" opacity=".7"/><circle cx="16" cy="16" r="2" opacity=".7"/><circle cx="21" cy="16" r="2" opacity=".7"/></g><circle cx="16" cy="23.5" r="2.75" fill="var(--s1)"/></svg>
+    sieve
+  </a>
+  <div class="links">
+    <a href="#billion">Billion scale</a>
+    <a href="#diskann">vs DiskANN</a>
+    <a href="#method">Method</a>
+    <a class="gh" href="https://github.com/18Abhinav07/A-Game-Of-Vectors">GitHub</a>
+  </div>
+</div></nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="hero-copy">
+      <h1>Search a billion vectors from a laptop. <span class="q">p99 under 12 ms.</span></h1>
+      <p class="lede">sieve is a vector search engine written from scratch in Rust. It rebuilds the design Exa described in <a href="https://exa.ai/blog/building-web-scale-vector-db">How we built a web-scale vector database</a>, then measures it: 1 billion vectors and 100 GB of raw data, served from one 24 GB laptop with no servers and no GPU.</p>
+      <dl class="spec">
+        <div><dt>Vectors searched</dt><dd>1,000,000,000</dd></div>
+        <div><dt>Recall@10 · p99</dt><dd>0.906 · 11.2 ms</dd></div>
+        <div><dt>Lowest memory</dt><dd>298 MB</dd></div>
+        <div><dt>Index build</dt><dd>~22 min</dd></div>
+      </dl>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/18Abhinav07/A-Game-Of-Vectors"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>View the source</a>
+        <a class="btn" href="https://github.com/18Abhinav07/A-Game-Of-Vectors/blob/main/BENCHMARKS.md">Read the benchmarks</a>
+      </div>
+    </div>
+
+    <div class="demo" aria-label="Animation of one query passing through sieve">
+      <div class="demo-head"><span>One query, four steps</span><button id="replay" type="button">Replay</button></div>
+      <div class="stage"><canvas id="cv" role="img" aria-label="Points representing vectors grouped into clusters. A query picks its nearest clusters, scans their points, reranks the best candidates and returns the ten nearest."></canvas><span class="clock" id="clock">0.0 ms</span></div>
+      <ol class="steps" id="steps">
+        <li><b>Route</b>Pick the nearest of 131,072 cluster centres.</li>
+        <li><b>Scan</b>Score their vectors with 1-bit codes held in RAM.</li>
+        <li><b>Rerank</b>Read the best candidates exactly from SSD, in parallel.</li>
+        <li><b>Return</b>The ten nearest. 2.7 ms median.</li>
+      </ol>
+    </div>
+  </div>
+</header>
+
+<main>
+<section class="block" id="billion"><div class="wrap">
+  <div class="head">
+    <div><div class="kicker">The target</div><h2>“A billion vectors in under 100 ms.” Every configuration clears it at p99.</h2></div>
+    <p>Each row is sieve on the full MS SPACEV-1B benchmark, 10,000 queries. The bar runs from the median query to the 99th percentile. The dashed line is the 100 ms budget.</p>
+  </div>
+  <div class="budget" id="budget" role="img" aria-label="Latency of five 1-billion-vector configurations against a 100 millisecond target. All p99 latencies are between 9.9 and 37.3 ms."></div>
+  <div class="legend">
+    <span class="key"><span class="sw hollow"></span>Median (p50)</span>
+    <span class="key"><span class="sw"></span>99th percentile (p99)</span>
+    <span class="key"><span style="display:inline-block;height:14px;border-left:2px dashed var(--ink-3)"></span>100 ms budget</span>
+  </div>
+  <p class="note">Search time only. Embedding the query and the network add 5–20 ms on top, which still leaves the slowest row well inside the budget.</p>
+</div></section>
+
+<section class="block" id="diskann"><div class="wrap">
+  <div class="head">
+    <div><div class="kicker">Head-to-head from SSD</div><h2>Against Microsoft’s DiskANN, level on throughput and 7–10× faster per query.</h2></div>
+    <p>DiskANN is the standard index for data that doesn’t fit in memory. Both ran on the same laptop over the first 10M SPACEV vectors, with the same queries and ground truth. Caches were cleared before each run and each used about 0.5 GB of RAM. DiskANN leads at low recall. Above 0.94 its chain of dependent reads gets long, while sieve sends one parallel batch.</p>
+  </div>
+  <div class="charts">
+    <figure>
+      <figcaption><b>Throughput</b><span>Queries per second against recall@10. Higher is better.</span></figcaption>
+      <div class="plot" id="ssd-qps"></div>
+      <div class="legend" id="leg-ssd"></div>
+    </figure>
+    <figure>
+      <figcaption><b>Latency</b><span>Mean time per query against recall@10. Lower is better.</span></figcaption>
+      <div class="plot" id="ssd-lat"></div>
+      <div class="legend" id="leg-ssd2"></div>
+    </figure>
+  </div>
+  <div class="callout">
+    <div><b>1.9–2.8 ms</b><span>sieve mean latency from 0.945 to 0.970 recall, against DiskANN’s 14–26 ms at 48 threads.</span></div>
+    <div><b>1.6×</b><span>sieve’s throughput over DiskANN at recall 0.97 when both run 12 threads.</span></div>
+    <div><b>7 s vs 211 s</b><span>Time to build the 10M index on this laptop.</span></div>
+  </div>
+  <details><summary>Show the data</summary><div class="tbl" id="tbl-ssd"></div></details>
+</div></section>
+
+<section class="block" id="ram"><div class="wrap">
+  <div class="head">
+    <div><div class="kicker">Where it loses</div><h2>With everything in RAM, a graph wins by 45–50×.</h2></div>
+    <p>In memory, DiskANN’s graph walk scores about 1,840 vectors per query. sieve’s cluster scan scores about 222,000 compressed codes. Each code is about 9× cheaper, but there are 120× more of them. Exa’s design doesn’t target this case. The known fix is many smaller clusters routed by a graph, as in Microsoft’s SPANN.</p>
+  </div>
+  <div class="charts">
+    <figure>
+      <figcaption><b>Throughput in RAM</b><span>Queries per second against recall@10, log scale, 12 threads each.</span></figcaption>
+      <div class="plot" id="ram-qps"></div>
+      <div class="legend" id="leg-ram"></div>
+    </figure>
+    <figure>
+      <figcaption><b>What each one costs</b><span>The same 10M vectors on the same laptop.</span></figcaption>
+      <div class="tbl" style="margin-top:4px">
+        <table>
+          <thead><tr><th></th><th>sieve</th><th>DiskANN</th></tr></thead>
+          <tbody>
+            <tr><td>Index build, 12 threads</td><td>7 s</td><td>169–211 s</td></tr>
+            <tr><td>RAM, in-memory search</td><td>1.8 GB</td><td>7.2 GB</td></tr>
+            <tr><td>RAM, SSD search</td><td>0.5 GB</td><td>0.5 GB</td></tr>
+            <tr><td>Scored per query</td><td>~222k codes</td><td>~1,840 vectors</td></tr>
+            <tr><td>SSD reads per query</td><td>one parallel batch</td><td>dependent hops</td></tr>
+            <tr><td>QPS at recall 0.97 from SSD</td><td>1,631</td><td>1,037</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:14px">With its whole 3.7 GB disk index cached in RAM, DiskANN reaches 21,000 QPS at recall 0.923, about 8× sieve fully in memory.</p>
+    </figure>
+  </div>
+  <details><summary>Show the data</summary><div class="tbl" id="tbl-ram"></div></details>
+</div></section>
+
+<section class="block" id="method"><div class="wrap">
+  <div class="head">
+    <div><div class="kicker">How it was measured</div><h2>One laptop, public data, and every run reproducible.</h2></div>
+    <p>Exa’s post described the design but published no recall or latency numbers. Every figure here comes from logs committed to the repository.</p>
+  </div>
+  <ul class="method">
+    <li><b>One machine</b>Apple M4 Pro, 12 cores, 24 GB of RAM, internal SSD. No servers, no GPU, no cloud.</li>
+    <li><b>Public benchmarks</b>MS SPACEV-1B (100-d int8) with official ground truth, and 113.5M MS MARCO v2.1 passages.</li>
+    <li><b>Cold means cold</b>Index files are evicted from the OS page cache before every SSD run, checked with <code>mincore</code>.</li>
+    <li><b>Fair to DiskANN</b>Its disk index had no macOS read path. A small patch adds uncached <code>pread</code>, matching its Linux path.</li>
+    <li><b>One recall metric</b>The head-to-head scores both systems with DiskANN’s strict recall@10. The 1B figures are tie-aware, within 0.001.</li>
+    <li><b>Also at 113.5M passages</b>Recall 0.909 at 4.8 ms median with codes in RAM, or 0.902 at 13 ms in 225 MB.</li>
+  </ul>
+</div></section>
+</main>
+
+<footer><div class="wrap">
+  <span>sieve, by Abhinav Pangaria</span>
+  <a href="https://github.com/18Abhinav07/A-Game-Of-Vectors">github.com/18Abhinav07/A-Game-Of-Vectors</a>
+</div></footer>
+
+<script>
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const nav = document.getElementById("nav");
+addEventListener("scroll", () => nav.classList.toggle("scrolled", scrollY > 8), { passive: true });
+
+/* ---------- hero: one query through the sieve ---------- */
+(function demo() {
+  const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+  const clock = document.getElementById("clock"), steps = [...document.querySelectorAll("#steps li")];
+  let seed = 7;
+  const rnd = () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-9)) * Math.cos(2 * Math.PI * rnd());
+  const C = [], P = [];
+  for (let gy = 0; gy < 7; gy++) for (let gx = 0; gx < 9; gx++) {
+    if (rnd() < 0.12) continue;
+    C.push({ x: (gx + 0.5 + (rnd() - 0.5) * 0.8) / 9, y: (gy + 0.5 + (rnd() - 0.5) * 0.8) / 7 });
+  }
+  C.forEach((c, ci) => { const n = 30 + (rnd() * 40 | 0), s = 0.022 + rnd() * 0.02; for (let i = 0; i < n; i++) P.push({ x: c.x + gauss() * s * 1.2, y: c.y + gauss() * s * 1.5, c: ci }); });
+  const Q = { x: 0.57, y: 0.47 };
+  const d2 = (a, b) => (a.x - b.x) ** 2 + ((a.y - b.y) * 0.77) ** 2;
+  const probed = C.map((c, i) => [d2(c, Q), i]).sort((a, b) => a[0] - b[0]).slice(0, 6).map(a => a[1]);
+  const pset = new Set(probed);
+  const cand = P.filter(p => pset.has(p.c)).sort((a, b) => d2(a, Q) - d2(b, Q));
+  const rer = new Set(cand.slice(0, 40)), top = cand.slice(0, 10);
+  // timeline in seconds
+  const T = { route: 0.6, scan: 1.7, rerank: 2.9, ret: 3.9, end: 4.8 };
+  const ms = [0, 0.3, 1.4, 2.4, 2.7];
+  let W = 0, H = 0, t0 = 0, raf = 0;
+  function size() { const r = cv.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1); W = r.width; H = r.height; cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+  const ease = x => x <= 0 ? 0 : x >= 1 ? 1 : 1 - Math.pow(1 - x, 3);
+  const k = (t, a, b) => ease((t - a) / (b - a));
+  function frame(t) {
+    const X = v => 12 + v * (W - 24), Y = v => 12 + v * (H - 24);
+    const dot = css("--dot"), ink = css("--ink"), s1 = css("--s1"), ink3 = css("--ink-3"), panel = css("--panel");
+    ctx.clearRect(0, 0, W, H);
+    const fadeIn = k(t, 0, 0.5), route = k(t, T.route, T.route + 0.6), scan = k(t, T.scan, T.scan + 0.7), rr = k(t, T.rerank, T.rerank + 0.6), ret = k(t, T.ret, T.ret + 0.6);
+    // points
+    for (const p of P) {
+      const inP = pset.has(p.c);
+      let col = dot, a = fadeIn * (1 - 0.55 * scan * (inP ? 0 : 1)), r = 1.6;
+      if (inP && scan > 0) { col = s1; a = fadeIn * (0.25 + 0.55 * scan) * (1 - 0.55 * rr * (rer.has(p) ? 0 : 1)); }
+      if (rer.has(p) && rr > 0) { a = 0.5 + 0.5 * rr; r = 1.6 + 0.8 * rr; }
+      ctx.globalAlpha = a; ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), r, 0, 7); ctx.fill();
+    }
+    // centroids
+    C.forEach((c, i) => {
+      const on = pset.has(i);
+      ctx.globalAlpha = fadeIn * (on ? 0.5 + 0.5 * route : 0.6 - 0.35 * route);
+      ctx.strokeStyle = on && route > 0 ? s1 : ink3; ctx.lineWidth = 1.5;
+      const x = X(c.x), y = Y(c.y), s = on ? 4 + 1.5 * route : 3.5;
+      ctx.beginPath(); ctx.moveTo(x - s, y); ctx.lineTo(x + s, y); ctx.moveTo(x, y - s); ctx.lineTo(x, y + s); ctx.stroke();
+      if (on && route > 0) { ctx.globalAlpha = 0.35 * route * (1 - scan * 0.6); ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(X(Q.x), Y(Q.y)); ctx.lineTo(X(Q.x) + (x - X(Q.x)) * route, Y(Q.y) + (y - Y(Q.y)) * route); ctx.stroke(); ctx.setLineDash([]); }
+    });
+    // results
+    if (ret > 0) top.forEach((p, i) => {
+      const a = k(t, T.ret + i * 0.05, T.ret + i * 0.05 + 0.4);
+      ctx.globalAlpha = a * 0.5; ctx.strokeStyle = ink; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(X(Q.x), Y(Q.y)); ctx.lineTo(X(p.x), Y(p.y)); ctx.stroke();
+      ctx.globalAlpha = a; ctx.lineWidth = 1.75;
+      ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 5.5, 0, 7); ctx.stroke();
+    });
+    // query
+    const qa = k(t, 0.25, 0.6);
+    if (qa > 0) {
+      const pulse = t < T.end && !reduce ? (Math.sin(t * 5) + 1) * 0.5 : 0;
+      ctx.globalAlpha = qa * 0.18 * (1 - pulse * 0.5); ctx.fillStyle = s1;
+      ctx.beginPath(); ctx.arc(X(Q.x), Y(Q.y), 13 + pulse * 4, 0, 7); ctx.fill();
+      ctx.globalAlpha = qa; ctx.fillStyle = ink; ctx.strokeStyle = panel; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(X(Q.x), Y(Q.y), 6, 0, 7); ctx.fill(); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    // clock + steps
+    const marks = [T.route, T.scan, T.rerank, T.ret, T.end];
+    let m = 0;
+    for (let i = 0; i < 4; i++) if (t >= marks[i]) m = ms[i + 1] - (ms[i + 1] - ms[i]) * (1 - Math.min(1, (t - marks[i]) / (marks[i + 1] - marks[i])));
+    clock.textContent = (t >= T.ret ? "2.7" : m.toFixed(1)) + " ms";
+    steps.forEach((li, i) => li.classList.toggle("on", t >= marks[i] && (i === 3 || t < marks[i + 1] || t >= T.end)));
+  }
+  function loop(now) { const t = (now - t0) / 1000; frame(t); if (t < T.end + 0.2) raf = requestAnimationFrame(loop); }
+  function play() { cancelAnimationFrame(raf); size(); if (reduce) { frame(99); return; } t0 = performance.now(); raf = requestAnimationFrame(loop); }
+  document.getElementById("replay").addEventListener("click", play);
+  new ResizeObserver(() => { size(); frame(reduce ? 99 : (performance.now() - t0) / 1000); }).observe(cv);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => frame(99));
+  // start when visible
+  const io = new IntersectionObserver(es => { if (es[0].isIntersecting) { io.disconnect(); play(); } }, { threshold: 0.3 });
+  io.observe(cv);
+})();
+
+/* ---------- 100 ms budget strip ---------- */
+const rows1B = [
+  { r: 0.906, p50: 2.7, p99: 11.2, qps: 420, mem: "12 GiB RAM, the rest cold from SSD" },
+  { r: 0.941, p50: 5.3, p99: 15.2, qps: 222, mem: "12 GiB RAM, the rest cold from SSD" },
+  { r: 0.960, p50: 8.7, p99: 21.6, qps: 127, mem: "12 GiB RAM, the rest cold from SSD" },
+  { r: 0.911, p50: 7.25, p99: 9.87, qps: 147, mem: "298 MB of RAM in total" },
+  { r: 0.964, p50: 28.19, p99: 37.3, qps: 35, mem: "298 MB of RAM in total" },
+];
+document.getElementById("budget").innerHTML = rows1B.map(d => `
+  <div class="brow">
+    <div class="blabel"><b>recall ${d.r.toFixed(3)} · ${d.qps} QPS</b>${d.mem}</div>
+    <div class="btrack">
+      <span class="brange" style="left:${d.p50}%;width:${d.p99 - d.p50}%"></span>
+      <span class="bdot p50" style="left:${d.p50}%" title="p50 ${d.p50} ms"></span>
+      <span class="bdot" style="left:${d.p99}%" title="p99 ${d.p99} ms"></span>
+      <span class="bval" style="left:${d.p99}%">${d.p99} ms</span>
+    </div>
+  </div>`).join("") + `
+  <div class="baxis"><div></div><div class="ticks tick">${[0, 25, 50, 75].map(t => `<span style="left:${t}%">${t}</span>`).join("")}<span style="left:100%">100 ms</span></div></div>`;
+
+/* ---------- charts ---------- */
+// [recall@10 strict, QPS, config, mean latency ms]
+const SSD = [
+  { id: "s1", name: "sieve", sub: "12 threads", shape: "circle", pts: [[0.8937, 3546, "32:50:1000", 1.24], [0.9301, 3313, "64:50:1000", 1.58], [0.9449, 3016, "96:50:1000", 1.90], [0.9552, 2528, "96:70:1000", 2.03], [0.9641, 2180, "128:70:2000", 2.60], [0.9699, 1631, "128:100:2000", 2.77], [0.9737, 985, "128:200:2000", 3.45]] },
+  { id: "s2", name: "DiskANN", sub: "48 threads", shape: "square", pts: [[0.8747, 7781, "L20, beam 1", 6.14], [0.9231, 4606, "L40, beam 1", 10.40], [0.9435, 3355, "L60, beam 1", 14.28], [0.9544, 2629, "L80, beam 1", 18.21], [0.9682, 1821, "L120, beam 1", 26.32]] },
+  { id: "s3", name: "DiskANN", sub: "12 threads", shape: "diamond", dash: true, pts: [[0.8747, 4507, "L20, beam 1", 2.66], [0.9231, 2727, "L40, beam 1", 4.40], [0.9435, 1932, "L60, beam 1", 6.21], [0.9544, 1506, "L80, beam 1", 7.97], [0.9682, 1037, "L120, beam 1", 11.56]] },
+];
+const RAM = [
+  { id: "s1", name: "sieve", sub: "12 threads", shape: "circle", pts: [[0.8502, 4461, "16:100:1000"], [0.9069, 3139, "32:100:1000"], [0.9314, 2453, "48:100:1000"], [0.9452, 1848, "64:100:1000"], [0.9737, 839, "128:200:2000"]] },
+  { id: "s2", name: "DiskANN", sub: "12 threads", shape: "square", pts: [[0.8711, 178377, "L20"], [0.9034, 146124, "L30"], [0.9227, 110909, "L40"], [0.9428, 88314, "L60"], [0.9532, 74945, "L80"], [0.9652, 50520, "L120"], [0.9719, 41555, "L160"], [0.979, 27504, "L240"]] },
+];
+const fmt = v => Math.round(v).toLocaleString("en-US");
+const lat = v => v == null ? "–" : v.toFixed(2) + " ms";
+
+function shape(s, x, y, r) {
+  if (s === "square") return `<rect x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="1.5"`;
+  if (s === "diamond") { const d = r * 1.35; return `<path d="M${x} ${y - d}L${x + d} ${y}L${x} ${y + d}L${x - d} ${y}Z"`; }
+  return `<circle cx="${x}" cy="${y}" r="${r}"`;
+}
+
+function chart(id, series, o) {
+  const host = document.getElementById(id);
+  const tip = document.createElement("div"); tip.className = "tip"; tip.hidden = true;
+  function draw() {
+    const W = Math.max(280, host.clientWidth), H = Math.round(Math.min(360, Math.max(250, W * 0.68)));
+    const m = { t: 16, r: 16, b: 42, l: 50 }, iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const X = v => m.l + (v - o.x[0]) / (o.x[1] - o.x[0]) * iw;
+    const Y = o.log ? v => m.t + ih - (Math.log10(v) - Math.log10(o.y[0])) / (Math.log10(o.y[1]) - Math.log10(o.y[0])) * ih
+                    : v => m.t + ih - (v - o.y[0]) / (o.y[1] - o.y[0]) * ih;
+    let s = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${o.aria}">`;
+    o.yt.forEach(t => { s += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(t)}" y2="${Y(t)}" style="stroke:var(--grid)"/><text x="${m.l - 8}" y="${Y(t) + 4}" text-anchor="end">${o.yf(t)}</text>`; });
+    o.xt.forEach(t => { s += `<text x="${X(t)}" y="${H - m.b + 18}" text-anchor="middle">${t.toFixed(2)}</text>`; });
+    s += `<line x1="${m.l}" x2="${W - m.r}" y1="${m.t + ih}" y2="${m.t + ih}" style="stroke:var(--rule)"/>`;
+    s += `<text class="axt" x="${m.l + iw / 2}" y="${H - 4}" text-anchor="middle">recall@10 →</text>`;
+    const pts = [];
+    series.forEach(se => {
+      const d = se.pts.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)} ${Y(o.v(p)).toFixed(1)}`).join("");
+      s += `<path d="${d}" fill="none" style="stroke:var(--${se.id})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" ${se.dash ? 'stroke-dasharray="5 4"' : ""}/>`;
+      se.pts.forEach(p => { const x = X(p[0]), y = Y(o.v(p)); pts.push({ x, y, se, p }); s += `${shape(se.shape, x, y, 4.5)} style="fill:var(--${se.id});stroke:var(--panel)" stroke-width="2"/>`; });
+    });
+    series.forEach(se => {
+      const lab = o.labels[se.id]; if (!lab) return;
+      const p = se.pts[lab.i];
+      const many = series.filter(z => z.name === se.name).length > 1;
+      s += `<text class="lab" x="${X(p[0]) + lab.dx}" y="${Y(o.v(p)) + lab.dy}" text-anchor="${lab.a || "start"}">${se.name}${many ? ", " + se.sub : ""}</text>`;
+    });
+    s += `<g class="hl"></g></svg>`;
+    host.innerHTML = s; host.appendChild(tip);
+    const svg = host.querySelector("svg"), hl = svg.querySelector(".hl");
+    const move = ev => {
+      const r = svg.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+      let best = null, bd = 1e9;
+      pts.forEach(q => { const dd = Math.hypot(q.x - mx, q.y - my); if (dd < bd) { bd = dd; best = q; } });
+      if (!best || bd > 40) { tip.hidden = true; hl.innerHTML = ""; return; }
+      hl.innerHTML = `${shape(best.se.shape, best.x, best.y, 7)} style="fill:var(--${best.se.id});stroke:var(--panel)" stroke-width="2.5"/>`;
+      tip.innerHTML = `<div class="t"><span style="width:10px;height:10px;border-radius:2px;background:var(--${best.se.id})"></span>${best.se.name}, ${best.se.sub}</div><div class="r">${best.p[2]}</div><div class="r">recall@10 ${best.p[0].toFixed(3)}</div><div class="r">${fmt(best.p[1])} QPS${best.p[3] ? " · " + lat(best.p[3]) + " mean" : ""}</div>`;
+      tip.hidden = false;
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      let left = best.x + 14, top = best.y - th - 12;
+      if (left + tw > W) left = best.x - tw - 14;
+      if (top < 0) top = best.y + 14;
+      tip.style.left = Math.max(0, left) + "px"; tip.style.top = top + "px";
+    };
+    svg.addEventListener("pointermove", move);
+    svg.addEventListener("pointerleave", () => { tip.hidden = true; hl.innerHTML = ""; });
+  }
+  draw();
+  let last = host.clientWidth;
+  new ResizeObserver(() => { if (Math.abs(host.clientWidth - last) > 4) { last = host.clientWidth; draw(); } }).observe(host);
+}
+
+function legend(id, series) {
+  document.getElementById(id).innerHTML = series.map(se => {
+    const st = se.shape === "square" ? "border-radius:2px" : se.shape === "diamond" ? "transform:rotate(45deg) scale(.85);border-radius:1px" : "border-radius:50%";
+    return `<span class="key"><span style="display:inline-block;width:11px;height:11px;background:var(--${se.id});${st}"></span>${se.name}, ${se.sub}${se.dash ? " (dashed)" : ""}</span>`;
+  }).join("");
+}
+
+function table(id, series, withLat) {
+  let h = `<table><thead><tr><th>system</th><th>config</th><th>recall@10</th><th>QPS</th>${withLat ? "<th>mean latency</th>" : ""}</tr></thead><tbody>`;
+  series.forEach(se => se.pts.forEach(p => { h += `<tr><td>${se.name}, ${se.sub}</td><td>${p[2]}</td><td>${p[0].toFixed(4)}</td><td>${fmt(p[1])}</td>${withLat ? `<td>${lat(p[3])}</td>` : ""}</tr>`; }));
+  document.getElementById(id).innerHTML = h + "</tbody></table>";
+}
+
+const xt = [0.88, 0.90, 0.92, 0.94, 0.96, 0.98];
+chart("ssd-qps", SSD, {
+  x: [0.865, 0.98], y: [0, 8000], v: p => p[1], aria: "Throughput from SSD against recall for sieve and DiskANN", xt,
+  yt: [0, 2000, 4000, 6000, 8000], yf: t => t ? (t / 1000) + "k" : "0",
+  labels: { s1: { i: 1, dx: 4, dy: -14, a: "start" }, s2: { i: 0, dx: 10, dy: 4 }, s3: { i: 4, dx: -8, dy: 22, a: "end" } },
+});
+chart("ssd-lat", SSD, {
+  x: [0.865, 0.98], y: [0, 30], v: p => p[3], aria: "Mean latency from SSD against recall for sieve and DiskANN", xt,
+  yt: [0, 10, 20, 30], yf: t => t + " ms",
+  labels: { s1: { i: 2, dx: 0, dy: -12, a: "middle" }, s2: { i: 3, dx: -10, dy: -8, a: "end" }, s3: { i: 4, dx: -10, dy: -10, a: "end" } },
+});
+chart("ram-qps", RAM, {
+  x: [0.84, 0.985], y: [500, 300000], log: true, v: p => p[1], aria: "In-memory throughput against recall, log scale", xt: [0.86, 0.90, 0.94, 0.98],
+  yt: [1000, 10000, 100000], yf: t => (t / 1000) + "k",
+  labels: { s1: { i: 0, dx: 0, dy: 20, a: "start" }, s2: { i: 0, dx: 0, dy: -14, a: "start" } },
+});
+legend("leg-ssd", SSD); legend("leg-ssd2", SSD); legend("leg-ram", RAM);
+table("tbl-ssd", SSD, true); table("tbl-ram", RAM, false);
+</script>
+</body>
+</html>

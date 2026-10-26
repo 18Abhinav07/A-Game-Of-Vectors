@@ -1,4 +1,8 @@
+<p><img src="site/logo.svg" width="56" alt="sieve logo"></p>
+
 # sieve
+
+**[Results site: 18abhinav07.github.io/A-Game-Of-Vectors](https://18abhinav07.github.io/A-Game-Of-Vectors/)**, with the 1B latency budget and the DiskANN head-to-head as interactive charts.
 
 A Rust vector search engine that reproduces, measures and extends the design Exa published in
 [How we built a web-scale vector database](https://exa.ai/blog/building-web-scale-vector-db).
