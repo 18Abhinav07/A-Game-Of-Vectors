@@ -184,12 +184,20 @@ fn main() -> Result<()> {
             let mut hot_bytes = 0;
             if hot_gb > 0.0 {
                 anyhow::ensure!(nq < qn, "--hot-gb learns from the queries after the first --nq; none are left");
-                let nprobe = configs.split(',').filter_map(|c| c.split(':').next()?.parse::<usize>().ok()).max().unwrap_or(64);
+                // Routing of the widest config: its nprobe, and its margin if it has one.
+                let (nprobe, margin) = configs
+                    .split(',')
+                    .map(|c| {
+                        let f: Vec<&str> = c.split(':').collect();
+                        (f[0].parse::<usize>().unwrap_or(64), f.get(3).and_then(|m| m.trim_start_matches('m').parse::<f32>().ok()).unwrap_or(0.0))
+                    })
+                    .max_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)))
+                    .unwrap_or((64, 0.0));
                 let t0 = Instant::now();
-                let hot = bigann::hot_leaves(&index, &all[nq..], nprobe, (hot_gb * (1u64 << 30) as f64) as u64);
+                let hot = bigann::hot_leaves(&index, &all[nq..], nprobe, margin, (hot_gb * (1u64 << 30) as f64) as u64);
                 hot_bytes = index.postings.pin(&hot);
                 eprintln!(
-                    "pinned {} hottest leaves ({:.2} GiB, learned from {} held-out queries at nprobe {nprobe}) in {:.1} s",
+                    "pinned {} hottest leaves ({:.2} GiB, learned from {} held-out queries at nprobe {nprobe}, margin {margin}) in {:.1} s",
                     hot.len(),
                     hot_bytes as f64 / (1u64 << 30) as f64,
                     qn - nq,
@@ -201,7 +209,8 @@ fn main() -> Result<()> {
                 let nprobe: usize = it.next().unwrap().parse()?;
                 let cand: usize = it.next().unwrap_or("500").parse()?;
                 let refine: usize = it.next().unwrap_or("0").parse()?;
-                let p = Params { nprobe, cand, k: 10, refine };
+                let margin: f32 = it.next().map(|m| m.trim_start_matches('m').parse()).transpose()?.unwrap_or(0.0);
+                let p = Params { nprobe, cand, k: 10, refine, margin };
                 if diag {
                     diagnose(&index, qs, &gt_ids, &gt_dist, gk, &p);
                 }
@@ -232,20 +241,21 @@ fn main() -> Result<()> {
                 let ms = |ns: u64| ns as f64 / 1e6 / n;
                 let (mean, p50, p99) = (lat.iter().sum::<f64>() / n, pct(&mut lat, 0.5), pct(&mut lat, 0.99));
                 println!(
-                    "{label} {cfg}{}: R@10 {:.4}, p50 {p50:.2} ms, p99 {p99:.2} ms, mean {mean:.2} (route {:.2}, scan {:.2}, io {:.2}, rerank {:.2}), {:.0} scanned, {mb:.1} MB/q, {qps:.0} QPS",
+                    "{label} {cfg}{}: R@10 {:.4}, p50 {p50:.2} ms, p99 {p99:.2} ms, mean {mean:.2} (route {:.2}, scan {:.2}, io {:.2}, rerank {:.2}), {:.1} probes, {:.0} scanned, {mb:.1} MB/q, {qps:.0} QPS",
                     if cold { " cold" } else { "" },
                     rec / n,
                     ms(tm.route),
                     ms(tm.scan),
                     ms(tm.io_wait),
                     ms(tm.rerank),
+                    tm.probes as f64 / n,
                     tm.scanned as f64 / n
                 );
                 log(&a.log, serde_json::json!({
-                    "kind": "search", "label": label, "index": a.index, "gt": gt, "nq": nq, "nprobe": nprobe, "cand": cand, "refine": refine, "bits": index.model.bits,
+                    "kind": "search", "label": label, "index": a.index, "gt": gt, "nq": nq, "nprobe": nprobe, "cand": cand, "refine": refine, "margin": margin, "bits": index.model.bits,
                     "cold": cold, "cache_mb": cache_mb, "hot_bytes": hot_bytes, "recall10": rec / n, "p50_ms": p50, "p99_ms": p99, "mean_ms": mean,
                     "route_ms": ms(tm.route), "scan_ms": ms(tm.scan), "io_ms": ms(tm.io_wait), "rerank_ms": ms(tm.rerank),
-                    "scanned": tm.scanned as f64 / n, "mb_per_query": mb, "qps": qps,
+                    "probes": tm.probes as f64 / n, "scanned": tm.scanned as f64 / n, "mb_per_query": mb, "qps": qps,
                 }))?;
             }
         }

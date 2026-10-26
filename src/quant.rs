@@ -113,7 +113,7 @@ pub fn query_i8(w: &[f32], out: &mut Vec<i8>) -> f32 {
 pub fn dot_i8i8(a: &[i8], b: &[i8]) -> i32 {
     debug_assert_eq!(a.len(), b.len());
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("dotprod") && a.len() % 64 == 0 {
+    if std::arch::is_aarch64_feature_detected!("dotprod") && a.len().is_multiple_of(64) {
         // SAFETY: dotprod was detected and the length is a multiple of the 64-byte step.
         return unsafe { dot_i8i8_neon(a, b) };
     }

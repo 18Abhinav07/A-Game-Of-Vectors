@@ -44,7 +44,7 @@ impl Rotation {
     }
 
     pub fn from_signs(signs: Vec<f32>) -> Self {
-        assert!(signs.len() % ROUNDS == 0 && (signs.len() / ROUNDS).is_power_of_two(), "rotation file");
+        assert!(signs.len().is_multiple_of(ROUNDS) && (signs.len() / ROUNDS).is_power_of_two(), "rotation file");
         Self { signs }
     }
 

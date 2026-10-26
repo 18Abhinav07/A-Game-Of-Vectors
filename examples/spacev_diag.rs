@@ -15,13 +15,13 @@ const NQ: usize = 1000;
 const C: usize = 4000;
 
 fn main() -> anyhow::Result<()> {
-    let dir = Path::new("data/sv1b");
+    let dir = Path::new("data/sv1b-b2");
     let index = Index::open(dir, Path::new("data/spacev"), 0)?;
     let (_, _, qs) = bigann::read_bin::<i8>(Path::new("data/spacev/query.i8bin"))?;
     let (nq, gk, gt_ids, gt_dist) = bigann::read_gt(Path::new("data/spacev/public_query_gt100.bin"))?;
     let qs: Vec<[i8; D]> = qs.chunks_exact(D).map(|q| q.try_into().unwrap()).collect();
 
-    let p = Params { nprobe: 64, cand: C, k: 10, refine: 0 };
+    let p = Params { nprobe: 64, cand: C, k: 10, refine: 0, margin: 0.0 };
     let mut out = std::io::BufWriter::new(std::fs::File::create("results/spacev-diag.bin")?);
     for qi in 10_000..10_000 + NQ {
         let q = &qs[qi];
@@ -54,7 +54,7 @@ fn main() -> anyhow::Result<()> {
     let probes = |range: std::ops::Range<usize>| {
         let mut hits = vec![0u64; k];
         for qi in range {
-            let (probe, _) = index.route(&qs[qi], &Params { nprobe: 64, cand: 1, k: 10, refine: 0 }, &mut Timing::default());
+            let (probe, _) = index.route(&qs[qi], &Params { nprobe: 64, cand: 1, k: 10, refine: 0, margin: 0.0 }, &mut Timing::default());
             probe.iter().for_each(|&c| hits[c as usize] += 1);
         }
         hits
