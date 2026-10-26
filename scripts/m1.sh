@@ -10,6 +10,8 @@ $B/ingest data/raw/corpus/0{0..9}.parquet --out data/ingest 2>&1 | grep -v "rows
 cat data/ingest/meta.json
 $B/index --ingest data/ingest --out data/index-plain --k 4096 --sample 500000
 $B/index --ingest data/ingest --out data/index --k 4096 --sample 500000 --soar 1.0
+# RaBitQ residual codes and the 2-bit tier (D9, D10): the index every later M1 run uses.
+$B/index --ingest data/ingest --out data/index-rabitq --k 4096 --sample 500000 --soar 1.0 --rabitq
 for idx in data/index-plain data/index; do
   $B/search --index $idx --log $LOG routing
   $B/search --index $idx --log $LOG eval --configs "8:1000:full,16:1000:full,32:1000:full,64:1000:full,128:1000:full,32:200:full,32:1000:prefix,32:1000:none"

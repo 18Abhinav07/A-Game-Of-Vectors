@@ -159,21 +159,76 @@ What a real service would still need, roughly in order:
   RAM. Closing that needs SPANN's structure: many small posting lists behind a graph over the
   centroids.
 
-## Reproduce
+## Run it and reproduce the numbers
+### What you need
+- **Machine**: every number here was measured on one MacBook Pro with an Apple M4 Pro (12 cores),
+  24 GB of RAM and its internal SSD, on macOS. The fast paths are Apple Silicon specific: NEON
+  `vqtbl1q_u8` and `sdot` kernels, Accelerate (AMX) sgemm, and `F_NOCACHE` for cold reads. The
+  crate also builds elsewhere with scalar and rayon fallbacks, but only macOS on Apple Silicon
+  has been measured.
+- **Rust** 1.85 or newer (edition 2024): `rustup update stable`.
+- **curl** for the downloads. Python 3 only for the optional FAISS and DiskANN baselines.
+- **Disk and time**, per experiment:
+
+| Experiment | Download | Disk at peak | Time |
+|---|---|---|---|
+| Tests and kernels | none | none | 1 min |
+| DiskANN head-to-head, sieve side (10M SPACEV) | 10 GB | 11 GB | ~5 min download, 1 min run |
+| M1 (18.4M passages) | 58 GB (10 parquet shards) | ~85 GB | download, then 79 s ingest and ~2 min per index |
+| M2 (113.5M passages) | all 60 shards, streamed and deleted | 87 GB of int8 rows plus codes and index | 3 h 19 min download and ingest, 13 min index |
+| SPACEV-1B | 100 GB | ~200 GB (chunks, postings, run files) | ~55 min download, build overlapped |
+
+### 1. Build and test (no data needed)
 ```sh
-cargo test --release
-./scripts/m1.sh          # 10 shards: download, ingest, index (plain + SOAR), eval, bench
+git clone https://github.com/18Abhinav07/A-Game-Of-Vectors.git && cd A-Game-Of-Vectors
+cargo test --release                       # 31 tests: NEON kernels against scalar references,
+                                           # the RaBitQ error bound, SOAR, cache, BM25, sharding wire format
+cargo run --release --example kernel       # 1-bit LUT scan throughput on this machine (~950M codes/s per core)
+```
+
+### 2. The quickest real result: sieve's side of the DiskANN head-to-head
+```sh
+./scripts/spacev.sh 0         # SPACEV queries, ground truth and chunk 0 (10 GB, resumable)
+./scripts/spacev-10m.sh       # build the 10M index (~10 s), search in RAM, then cold from SSD
+```
+It prints one line per config (R@10, strict R@10, p50, p99, stage times, QPS) and appends JSON to
+`results/diskann-h2h.jsonl`. A clean rebuild reproduced the published strict recall exactly
+(0.907 / 0.945 / 0.974 in RAM, 0.894 / 0.930 / 0.970 cold) and QPS within 2%. DiskANN's own
+side, with the macOS reader patch, is in [BENCHMARKS.md](BENCHMARKS.md#head-to-head-with-diskann-on-the-same-laptop-designmd-d22).
+
+### 3. The full runs
+```sh
+./scripts/download.sh 0 9 # M1 corpus: topics, qrels and the first 10 shards (58 GB, resumable)
+./scripts/m1.sh          # 10 shards: ingest, index (plain, SOAR, RaBitQ), eval, bench
 ./scripts/m2.sh          # all 60 shards, streamed and deleted as they are ingested
 ./scripts/ac-bench.sh    # M1 latency re-runs on AC power (refuses on battery or Low Power Mode)
-./scripts/spacev.sh      # SPACEV-1B: download the ten 10 GB base chunks, queries, ground truth
+./scripts/spacev.sh 0 1 2 3 4 5 6 7 8 9   # SPACEV-1B: the ten 10 GB base chunks
 ./scripts/spacev-1b.sh   # run alongside: train, add each chunk as it lands, pack, search
 ```
-Binaries: `ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
+M1 and M2 read the corpus that `scripts/download.sh` fetches (the Snowflake Arctic-Embed-M v1.5 MS MARCO
+v2.1 embeddings on Hugging Face). Every run appends JSON lines to `results/`. The committed
+files there are the logs behind every table, and `scripts/bench-summary.py` condenses `bench`
+output to one line per run. Latency depends on power state: on battery in Low Power Mode the M1 scan took
+1.6× as long and 12-thread QPS fell 3×, which is why `ac-bench.sh` refuses to run on battery.
+
+**FAISS baseline** (optional): `python3 -m venv .venv-bench && .venv-bench/bin/pip install
+faiss-cpu numpy`, then `.venv-bench/bin/python -I scripts/faiss_baseline.py --ingest data/ingest
+--out results/faiss-m1.jsonl` after M1.
+
+### Binaries
+`ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
 `search [--ssd --cache-mb N] [--shards host:port,... [--two-phase]] eval | routing | bench [--cold]`,
 `search live` (delete, reinsert, replay, compact), `bm25` (inverted index from the passage text),
 `search hybrid | filter`, `shard --shard i --of n --listen host:port [--ssd]`, `spacev train [--bits 2] | add | pack | search [--cold] [--hot-gb N]`
-(SPACEV-1B). Config strings are
-`nprobe:cand:rerank[:bM[xW]][:pΔ][:sN[k]]`, with rerank one of `none | prefix | full | tieredN | ssdN`.
+(SPACEV-1B). Every binary takes `--help`. Config strings are
+`nprobe:cand:rerank[:bM[xW]][:pΔ][:sN[k]]`, with rerank one of `none | prefix | full | tieredN | ssdN`;
+for `spacev search` they are `nprobe:exact_reads:refined_shortlist[:mMARGIN]`.
+
+### The site
+`site/` is the results page, plain HTML with no build step. Preview it with
+`python3 -m http.server -d site 8000` and open http://localhost:8000. Pushes to `main` that
+touch `site/` deploy it to [GitHub Pages](https://18abhinav07.github.io/A-Game-Of-Vectors/)
+through `.github/workflows/pages.yml`.
 
 ## Layout
 ```
@@ -193,5 +248,9 @@ src/data.rs    parquet streaming, topics, qrels
 src/eval.rs    recall, nDCG@10 (MaxP)
 src/bigann.rs  SPACEV-1B: L2 RaBitQ, two-level leaves, out-of-core add/pack, chunk rerank
 src/bin/spacev.rs  train | add | pack | search for the 1B track
+scripts/       download, end-to-end runs, FAISS and DiskANN baselines
+bench/diskann/ DiskANN job configs and its macOS SSD reader patch
+results/       the JSON logs behind every table
+site/          the results site (GitHub Pages)
 examples/      kernel, SSD, middle-tier and pread/mmap experiments
 ```
