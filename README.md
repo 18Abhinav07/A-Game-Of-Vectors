@@ -4,7 +4,7 @@
 
 **[Results site: 18abhinav07.github.io/A-Game-Of-Vectors](https://18abhinav07.github.io/A-Game-Of-Vectors/)**, with the 1B latency budget and the DiskANN head-to-head as interactive charts.
 
-A Rust vector search engine that reproduces, measures and extends the design Exa published in
+A vector search engine written from scratch in Rust, inspired by the architecture Exa described in
 [How we built a web-scale vector database](https://exa.ai/blog/building-web-scale-vector-db).
 It serves **113.5M passages** (the TREC-RAG 2024 MS MARCO v2.1 corpus, Arctic-Embed-M v1.5)
 on one 24 GB laptop: R@10 0.909 at 4.8 ms p50 and 460 QPS with the codes in RAM, or R@10 0.902
@@ -13,12 +13,12 @@ same laptop builds an index in about 22 minutes and serves R@10 0.906 at 420 QPS
 or 0.960 at 127 QPS with 12 GiB of RAM and everything else read cold from SSD, or R@10 0.911 at
 7.3 ms in 298 MB of RAM.
 
-Exa's post describes the design but publishes no recall or latency numbers. This repo
-measures it against exact search and NIST relevance labels, finds where it loses recall,
-and fixes that.
+Exa's post describes the design but publishes no code and no recall or latency numbers. The
+implementation, tuning and every number here are this repo's own: it measures the design
+against exact search and NIST relevance labels, finds where it loses recall, and fixes that.
 
 ## What's in it
-- **Exa's pipeline, built from scratch**: Matryoshka 256-d prefix → 1-bit codes → asymmetric
+- **The described pipeline, implemented from scratch**: Matryoshka 256-d prefix → 1-bit codes → asymmetric
   lookup-table scoring with a float query (NEON `vqtbl1q_u8`, 32-doc blocks, about 950M
   codes/s/core) → IVF → rerank.
 - **SOAR spilling** (Sun et al., NeurIPS 2023): measurement showed routing, not the 1-bit codes,
