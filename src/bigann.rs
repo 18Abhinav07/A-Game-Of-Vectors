@@ -22,6 +22,12 @@
 //!   11th neighbour (60 at 10M, 26 at 1B), and it cost 8 points of recall@10 at 10M.
 //!
 //! Slot factors are [mul, ‖x‖²]: est = 2·(⟨q,c⟩ + mul·(a·lut + b)) − ‖x‖².
+//!
+//! **Multi-bit refinement (D20).** An index trained with `bits` > 1 also stores, per slot, the
+//! low `bits − 1` planes of a uniform `bits`-bit code of the rotated residual (its top plane is
+//! the sign, which is the 1-bit code) and a scale f. The 1-bit scan keeps a shortlist; slots that
+//! enter it are re-estimated from all planes, and only the best of those are reranked from the
+//! base: the rerank's random reads, the 1B bottleneck, drop several-fold at the same recall.
 
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
@@ -35,7 +41,8 @@ use std::time::Instant;
 use crate::blas::gemm_abt;
 use crate::ivf::Rng;
 use crate::lut::{BLOCK, pack_block, scan};
-use crate::postings::{ALIGN, Postings, block_record};
+use crate::lut::unpack_slot;
+use crate::postings::{ALIGN, Postings, block_record_ext};
 use crate::rabitq::{self, Rotation};
 use crate::store::{Mapped, read_vec, write_vec};
 use crate::topk::TopK;
@@ -52,6 +59,58 @@ pub const CHUNK_ROWS: u64 = 100_000_000;
 /// Coarse cells a row is assigned among (its leaf is the best child of these).
 const TOP_COARSE: usize = 4;
 const PAD: u32 = u32::MAX;
+/// Widest refinement code: the slot keeps room for this many bits − 1 low planes.
+pub const MAX_BITS: usize = 3;
+
+/// The uniform `bits`-bit code of a rotated residual r (levels u − h, h = (2^bits − 1)/2, at a
+/// per-row step chosen to maximise cos(r, r̂), as in extended RaBitQ, Gao et al. SIGMOD 2025),
+/// as its low `bits − 1` bit planes (plane p holds bit p of u; dim i at byte i/8, bit i%8), and
+/// the scale f = ‖r‖² / ⟨r, u − h⟩, so ⟨q, r⟩ ≈ f · (⟨q, u⟩ − h · Σq). The top bit of u is
+/// r_i > 0, matching the 1-bit code, so it is not stored again.
+pub fn refine_encode(r: &[f32; PD], bits: usize, planes: &mut [u8; (MAX_BITS - 1) * CODE]) -> f32 {
+    planes.fill(0);
+    let top = 1u32 << (bits - 1);
+    let h = (2 * top - 1) as f32 / 2.0;
+    let amax = r.iter().fold(0f32, |m, v| m.max(v.abs()));
+    if amax < 1e-12 {
+        return 0.0;
+    }
+    // u for step delta: nearest level, its top bit forced to the sign so that it agrees with the
+    // stored 1-bit code even at r_i = 0.
+    let level = |v: f32, delta: f32| -> u32 {
+        let u = (v / delta + h + 0.5).floor().clamp(0.0, (2 * top - 1) as f32) as u32;
+        if v > 0.0 { u | top } else { u & (top - 1) }
+    };
+    let (mut best, mut best_delta) = (f32::MIN, amax / h);
+    for s in 0..24 {
+        let delta = amax / h * (0.3 + 0.035 * s as f32);
+        let (mut dot, mut n2) = (0f32, 0f32);
+        for &v in r {
+            let w = level(v, delta) as f32 - h;
+            dot += v * w;
+            n2 += w * w;
+        }
+        let cos = dot / n2.sqrt();
+        if cos > best {
+            (best, best_delta) = (cos, delta);
+        }
+    }
+    let (mut rr, mut dot) = (0f32, 0f32);
+    for (i, &v) in r.iter().enumerate() {
+        let u = level(v, best_delta);
+        for p in 0..bits - 1 {
+            planes[p * CODE + (i >> 3)] |= ((u >> p & 1) as u8) << (i & 7);
+        }
+        rr += v * v;
+        dot += v * (u as f32 - h);
+    }
+    if dot > 0.0 { rr / dot } else { 0.0 }
+}
+
+/// Bytes per slot of the refinement section for `bits`: the low planes and f.
+pub fn refine_bytes(bits: usize) -> usize {
+    if bits > 1 { (bits - 1) * CODE + 4 } else { 0 }
+}
 
 /// For every row, the `m` centroids maximising 2⟨x,c⟩ − ‖c‖² (nearest in L2), best first, with
 /// that score. sgemm in row blocks so the score matrix stays small.
@@ -166,6 +225,14 @@ pub fn train(base: &[i8], out: &Path, k1: usize, k2: usize, sample_n: usize, ite
     Ok(TrainStats { leaves: k1 * k2, seconds: t0.elapsed().as_secs_f64() })
 }
 
+/// The refinement width in `dir`/bits.u64 (absent: 1, the plain 1-bit index).
+pub fn read_bits(dir: &Path) -> Result<usize> {
+    let path = dir.join("bits.u64");
+    let bits = if path.exists() { read_vec::<u64>(&path)?[0] as usize } else { 1 };
+    anyhow::ensure!((1..=MAX_BITS).contains(&bits), "bits.u64 = {bits}, expected 1..={MAX_BITS}");
+    Ok(bits)
+}
+
 /// The trained centroids and rotation.
 pub struct Model {
     coarse: Vec<f32>,
@@ -175,9 +242,11 @@ pub struct Model {
     leaves_rot: Vec<f32>,
     k2: usize,
     pub rot: Rotation,
+    /// Refinement code width (D20); 1 = the plain 1-bit index.
+    pub bits: usize,
 }
 
-fn pad_rotate(rot: &Rotation, x: &[f32]) -> [f32; PD] {
+pub fn pad_rotate(rot: &Rotation, x: &[f32]) -> [f32; PD] {
     let mut v = [0f32; PD];
     v[..D].copy_from_slice(x);
     rot.apply(&mut v);
@@ -192,11 +261,17 @@ impl Model {
         anyhow::ensure!(rot.dim() == PD, "rotation.f32 is not {PD}-dim");
         let k2 = read_vec::<u64>(&dir.join("k2.u64"))?[0] as usize;
         let leaves_rot = leaves.par_chunks(D).flat_map_iter(|c| pad_rotate(&rot, c)).collect();
-        Ok(Self { coarse_norm: norms(&coarse), coarse, leaf_norm: norms(&leaves), leaves, leaves_rot, k2, rot })
+        let bits = read_bits(dir)?;
+        Ok(Self { coarse_norm: norms(&coarse), coarse, leaf_norm: norms(&leaves), leaves, leaves_rot, k2, rot, bits })
     }
 
     pub fn k(&self) -> usize {
         self.leaf_norm.len()
+    }
+
+    /// Leaf `c`'s centroid, padded and rotated.
+    pub fn leaf_rot(&self, c: usize) -> &[f32] {
+        &self.leaves_rot[c * PD..][..PD]
     }
 
     /// Each row's leaf: the best child among its TOP_COARSE nearest coarse cells.
@@ -228,7 +303,8 @@ impl Model {
     }
 }
 
-/// One stored row before packing: its leaf, id, RaBitQ code and [mul, ‖x‖²].
+/// One stored row before packing: its leaf, id, RaBitQ code, [mul, ‖x‖²] and, for a
+/// multi-bit index, the refinement planes and scale (`refine_encode`).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Slot {
@@ -237,6 +313,8 @@ pub struct Slot {
     pub code: [u8; CODE],
     pub mul: f32,
     pub nx: f32,
+    pub planes: [u8; (MAX_BITS - 1) * CODE],
+    pub f: f32,
 }
 
 fn run_path(dir: &Path, bucket: usize, first: u32) -> PathBuf {
@@ -266,10 +344,18 @@ pub fn add(dir: &Path, model: &Model, base: &[i8], first: u32, buckets: usize) -
             .enumerate()
             .map(|(j, (x, &leaf))| {
                 let xr = pad_rotate(&model.rot, x);
+                let c = &model.leaves_rot[leaf as usize * PD..][..PD];
                 let mut code = [0u8; CODE];
-                let [mul, _] = rabitq::encode(&xr, &model.leaves_rot[leaf as usize * PD..][..PD], &mut code);
+                let [mul, _] = rabitq::encode(&xr, c, &mut code);
                 let nx = x.iter().map(|v| v * v).sum();
-                Slot { leaf, id: first + (start + j) as u32, code, mul, nx }
+                let mut planes = [0u8; (MAX_BITS - 1) * CODE];
+                let f = if model.bits > 1 {
+                    let r: [f32; PD] = std::array::from_fn(|i| xr[i] - c[i]);
+                    refine_encode(&r, model.bits, &mut planes)
+                } else {
+                    0.0
+                };
+                Slot { leaf, id: first + (start + j) as u32, code, mul, nx, planes, f }
             })
             .collect();
         slots.extend_from_slice(&enc);
@@ -298,6 +384,8 @@ pub struct PackStats {
 /// 512-byte code blocks), writing block_off.u64 and postings.off. Each bucket's runs are deleted
 /// once its records are written.
 pub fn pack(dir: &Path, k: usize, buckets: usize) -> Result<PackStats> {
+    let bits = read_bits(dir)?;
+    let (extra, np) = (refine_bytes(bits), (bits - 1) * CODE);
     let runs = dir.join("runs");
     let mut names: Vec<String> = std::fs::read_dir(&runs)?.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned())).collect::<Result<_, _>>()?;
     names.sort();
@@ -327,6 +415,7 @@ pub fn pack(dir: &Path, k: usize, buckets: usize) -> Result<PackStats> {
             let mut blocks = vec![0u8; nb * BLOCK_BYTES];
             let mut factors = vec![0f32; nb * BLOCK * 2];
             let mut ids = vec![PAD; nb * BLOCK];
+            let mut ext = vec![0u8; nb * BLOCK * extra];
             for (bi, chunk) in m.chunks(BLOCK).enumerate() {
                 let codes: Vec<&[u8]> = chunk.iter().map(|s| &s.code[..]).collect();
                 pack_block(&codes, &mut blocks[bi * BLOCK_BYTES..][..BLOCK_BYTES]);
@@ -335,11 +424,17 @@ pub fn pack(dir: &Path, k: usize, buckets: usize) -> Result<PackStats> {
                 factors[2 * j] = s.mul;
                 factors[2 * j + 1] = s.nx;
                 ids[j] = s.id;
+                if extra > 0 {
+                    let e = &mut ext[j * extra..][..extra];
+                    e[..np].copy_from_slice(&s.planes[..np]);
+                    e[np..].copy_from_slice(&s.f.to_le_bytes());
+                }
             }
             w.write_all(&blocks)?;
             w.write_all(bytemuck::cast_slice(&factors))?;
             w.write_all(bytemuck::cast_slice(&ids))?;
-            pos += (nb * block_record(BLOCK_BYTES)) as u64;
+            w.write_all(&ext)?;
+            pos += (nb * block_record_ext(BLOCK_BYTES, extra)) as u64;
             let pad = pos.next_multiple_of(ALIGN) - pos;
             w.write_all(&vec![0u8; pad as usize])?;
             pos += pad;
@@ -369,8 +464,15 @@ pub fn pack(dir: &Path, k: usize, buckets: usize) -> Result<PackStats> {
 /// serial page fault, where the pool keeps 64 reads in flight.
 pub struct Base {
     files: Vec<std::sync::Arc<File>>,
+    lens: std::sync::Arc<Vec<u64>>,
     paths: Vec<PathBuf>,
 }
+
+const PAGE: usize = 4096;
+
+/// Page-aligned read buffer: two pages, for a row that straddles a page boundary.
+#[repr(align(4096))]
+struct Pages([u8; 2 * PAGE]);
 
 impl Base {
     /// base.00, base.01, ... from `dir`, as many as are complete (scripts/spacev.sh writes
@@ -381,12 +483,17 @@ impl Base {
             .take_while(|p| p.with_extension(format!("{}.done", p.extension().unwrap().to_str().unwrap())).exists())
             .collect();
         anyhow::ensure!(!paths.is_empty(), "no base.NN chunks in {}", dir.display());
-        let files = paths.iter().map(|p| File::open(p).map(std::sync::Arc::new)).collect::<std::io::Result<_>>()?;
-        Ok(Self { files, paths })
+        let files: Vec<_> = paths.iter().map(|p| File::open(p).map(std::sync::Arc::new)).collect::<std::io::Result<_>>()?;
+        let lens = files.iter().map(|f| f.metadata().map(|m| m.len())).collect::<std::io::Result<_>>()?;
+        Ok(Self { files, lens: std::sync::Arc::new(lens), paths })
     }
 
     /// Rows of `ids`, in order.
-    fn rows(&self, ids: &[u32]) -> Vec<i8> {
+    ///
+    /// Each row is read as the aligned 4 KiB page(s) holding it: with the page cache bypassed,
+    /// a 100 B read costs the device as much as a page and it completes fewer of them (138k
+    /// against 241k random reads/s on this SSD, examples/iobench.rs).
+    pub fn rows(&self, ids: &[u32]) -> Vec<i8> {
         // One job per pool thread: enough reads in flight to keep the SSD busy when cold, few
         // enough hand-offs that cached reads are not dominated by them.
         let per_job = ids.len().div_ceil(crate::store::io_pool().threads()).max(1);
@@ -394,12 +501,19 @@ impl Base {
             .chunks(per_job)
             .map(|chunk| {
                 let chunk = chunk.to_vec();
-                let files = self.files.clone();
+                let (files, lens) = (self.files.clone(), self.lens.clone());
                 Box::new(move || {
                     let mut rows = vec![0i8; chunk.len() * D];
+                    let mut buf = Box::new(Pages([0; 2 * PAGE]));
                     for (row, &id) in rows.chunks_exact_mut(D).zip(&chunk) {
-                        let (c, r) = (id as u64 / CHUNK_ROWS, id as u64 % CHUNK_ROWS);
-                        files[c as usize].read_exact_at(bytemuck::cast_slice_mut(row), r * D as u64).expect("base read");
+                        let (c, r) = ((id as u64 / CHUNK_ROWS) as usize, id as u64 % CHUNK_ROWS);
+                        let at = r * D as u64;
+                        let start = at / PAGE as u64 * PAGE as u64;
+                        let end = (at + D as u64).next_multiple_of(PAGE as u64).min(lens[c]);
+                        let page = &mut buf.0[..(end - start) as usize];
+                        files[c].read_exact_at(page, start).expect("base read");
+                        let o = (at - start) as usize;
+                        row.copy_from_slice(bytemuck::cast_slice(&page[o..o + D]));
                     }
                     rows
                 }) as Box<dyn FnOnce() -> Vec<i8> + Send>
@@ -409,12 +523,81 @@ impl Base {
     }
 
     /// Drops the chunks from the page cache and bypasses it from now on.
-    fn go_cold(&self) -> Result<()> {
+    pub fn go_cold(&self) -> Result<()> {
         for (f, p) in self.files.iter().zip(&self.paths) {
             crate::store::no_cache(f);
             crate::store::evict(p)?;
         }
         Ok(())
+    }
+}
+
+/// Leaves to pin under `budget` bytes, hottest per byte first: how often `qs` probe a leaf at
+/// `nprobe`, divided by its record size, is the read traffic a byte of RAM saves.
+pub fn hot_leaves(index: &Index, qs: &[[i8; D]], nprobe: usize, budget: u64) -> Vec<u32> {
+    use rayon::prelude::*;
+    let k = index.model.k();
+    let p = Params { nprobe, cand: 1, k: 10, refine: 0 };
+    let hits = qs
+        .par_iter()
+        .fold(
+            || vec![0u32; k],
+            |mut h, q| {
+                index.route(q, &p, &mut Timing::default()).0.iter().for_each(|&c| h[c as usize] += 1);
+                h
+            },
+        )
+        .reduce(|| vec![0u32; k], |a, b| a.iter().zip(&b).map(|(x, y)| x + y).collect());
+    let heat = |c: usize| hits[c] as f64 / index.postings.record_bytes(c).max(1) as f64;
+    let mut order: Vec<usize> = (0..k).filter(|&c| hits[c] > 0).collect();
+    order.sort_by(|&a, &b| heat(b).total_cmp(&heat(a)));
+    let mut used = 0;
+    order
+        .into_iter()
+        .take_while(|&c| {
+            used += index.postings.record_bytes(c);
+            used <= budget
+        })
+        .map(|c| c as u32)
+        .collect()
+}
+
+/// Per-query tables for the refined estimate: for each code byte position k and byte value v,
+/// the sum of the rotated query over the dims whose bits are set in v, so one plane's ⟨q, bits⟩
+/// is CODE lookups.
+struct Refiner {
+    tab: Vec<[f32; 256]>,
+    /// h · Σq, the offset of the centred levels.
+    off: f32,
+    bits: usize,
+}
+
+impl Refiner {
+    fn new(qr: &[f32; PD], bits: usize) -> Self {
+        let tab = (0..CODE)
+            .map(|k| {
+                let mut t = [0f32; 256];
+                for v in 1..256usize {
+                    t[v] = t[v & (v - 1)] + qr[8 * k + v.trailing_zeros() as usize];
+                }
+                t
+            })
+            .collect();
+        let h = ((1usize << bits) - 1) as f32 / 2.0;
+        Self { tab, off: h * qr.iter().sum::<f32>(), bits }
+    }
+
+    fn plane(&self, p: &[u8]) -> f32 {
+        p.iter().zip(&self.tab).map(|(&v, t)| t[v as usize]).sum()
+    }
+
+    /// ⟨q, r⟩ ≈ f · (⟨q, u⟩ − h · Σq), u = 2^(bits−1) · sign + Σ_p 2^p · plane_p.
+    fn estimate(&self, sign: &[u8; CODE], planes: &[u8], f: f32) -> f32 {
+        let mut u = (1u32 << (self.bits - 1)) as f32 * self.plane(sign);
+        for (p, pl) in planes.chunks_exact(CODE).enumerate() {
+            u += (1u32 << p) as f32 * self.plane(pl);
+        }
+        f * (u - self.off)
     }
 }
 
@@ -430,6 +613,9 @@ pub struct Params {
     /// Candidates kept from the code scan for the exact rerank.
     pub cand: usize,
     pub k: usize,
+    /// Multi-bit index only: the 1-bit shortlist re-estimated from all planes before the best
+    /// `cand` are reranked. 0 ranks by the 1-bit estimate alone.
+    pub refine: usize,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -445,7 +631,7 @@ impl Index {
     pub fn open(dir: &Path, base_dir: &Path, cache_bytes: usize) -> Result<Self> {
         Ok(Self {
             model: Model::open(dir)?,
-            postings: Postings::open_with(dir, cache_bytes, BLOCK_BYTES)?,
+            postings: Postings::open_ext(dir, cache_bytes, BLOCK_BYTES, refine_bytes(read_bits(dir)?))?,
             base: Base::open(base_dir)?,
         })
     }
@@ -480,16 +666,25 @@ impl Index {
     }
 
     /// The `p.cand` best slots of the probed leaves by code estimate, best first, as
-    /// (id, ⟨q,c⟩, ‖x‖²).
+    /// (id, estimate, ‖x‖²). On a multi-bit index with `p.refine` > 0 the estimate is the
+    /// refined one, computed for every slot that enters the 1-bit top `p.refine`.
     pub fn candidates(&self, q: &[i8; D], probe: &[u32], dots: &[f32], p: &Params, t: &mut Timing) -> Vec<(u32, f32, f32)> {
         let t1 = Instant::now();
         let mut qp = [0f32; PD];
         qp.iter_mut().zip(q).for_each(|(o, &x)| *o = x as f32);
         let rq: rabitq::Query<G> = rabitq::Query::new(&self.model.rot, &qp);
-        // (id, ⟨q,c⟩, ‖x‖²) of every slot admitted to the candidate top-k, indexed by its u32.
+        let bits = self.model.bits;
+        let refine = bits > 1 && p.refine > 0;
+        let rf = refine.then(|| Refiner::new(&pad_rotate(&self.model.rot, &qp[..D]), bits));
+        let extra = refine_bytes(bits);
+        // (id, estimate, ‖x‖²) of every slot admitted to the candidate top-k, indexed by its u32.
         let mut info: Vec<(u32, f32, f32)> = Vec::new();
-        let mut cand = TopK::new(p.cand);
+        // Without refinement `cand` is the list itself; with it, `cand` is the 1-bit shortlist
+        // that gates which slots are re-estimated, and `best` keeps the top by refined estimate.
+        let mut cand = TopK::new(if refine { p.refine.max(p.cand) } else { p.cand });
+        let mut best = TopK::new(p.cand);
         let (mut scores, mut scanned) = (Vec::new(), 0u64);
+        let mut sign = [0u8; CODE];
         let waited = self.postings.fetch_each(probe, |i, r| {
             let cent = dots[probe[i] as usize];
             let (blocks, f, ids) = (r.blocks(), r.factors(), r.ids());
@@ -503,7 +698,18 @@ impl Index {
                 let est = 2.0 * (cent + mul * (rq.a * sc as f32 + rq.b)) - nx;
                 if cand.threshold().is_none_or(|th| est > th) {
                     cand.push(est, info.len() as u32);
-                    info.push((id, cent, nx));
+                    let est = match &rf {
+                        Some(rf) => {
+                            unpack_slot(&blocks[j / BLOCK * BLOCK_BYTES..][..BLOCK_BYTES], j % BLOCK, &mut sign);
+                            let e = &r.extra()[j * extra..][..extra];
+                            let fs = f32::from_le_bytes(e[extra - 4..].try_into().unwrap());
+                            let est = 2.0 * (cent + rf.estimate(&sign, &e[..extra - 4], fs)) - nx;
+                            best.push(est, info.len() as u32);
+                            est
+                        }
+                        None => est,
+                    };
+                    info.push((id, est, nx));
                 }
             }
             scanned += ids.len() as u64;
@@ -511,7 +717,8 @@ impl Index {
         t.scanned += scanned;
         t.io_wait += waited;
         t.scan += (t1.elapsed().as_nanos() as u64).saturating_sub(waited);
-        cand.into_sorted().into_iter().map(|(_, i)| info[i as usize]).collect()
+        let top = if refine { best } else { cand };
+        top.into_sorted().into_iter().map(|(_, i)| info[i as usize]).collect()
     }
 
     /// Rescores candidates exactly from their base rows.
@@ -564,6 +771,37 @@ pub fn map_base(path: &Path) -> Result<Mapped<i8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gauss(rng: &mut Rng) -> [f32; PD] {
+        std::array::from_fn(|_| (0..12).map(|_| rng.below(1000) as f32 / 1000.0).sum::<f32>() - 6.0)
+    }
+
+    fn sign_code(r: &[f32; PD]) -> [u8; CODE] {
+        let mut c = [0u8; CODE];
+        (0..PD).filter(|&i| r[i] > 0.0).for_each(|i| c[i >> 3] |= 1 << (i & 7));
+        c
+    }
+
+    #[test]
+    fn refined_estimate_is_exact_on_its_own_residual_and_sharpens_with_bits() {
+        let mut rng = Rng::new(9);
+        let mut err = [0f64; MAX_BITS + 1];
+        for _ in 0..200 {
+            let (r, q) = (gauss(&mut rng), gauss(&mut rng));
+            let truth: f32 = r.iter().zip(&q).map(|(a, b)| a * b).sum();
+            for bits in 2..=MAX_BITS {
+                let mut planes = [0u8; (MAX_BITS - 1) * CODE];
+                let f = refine_encode(&r, bits, &mut planes);
+                let np = (bits - 1) * CODE;
+                // f is defined so that the estimate of ⟨r, r⟩ is exact.
+                let self_est = Refiner::new(&r, bits).estimate(&sign_code(&r), &planes[..np], f);
+                let rr: f32 = r.iter().map(|v| v * v).sum();
+                assert!((self_est - rr).abs() < 1e-3 * rr, "bits {bits}: {self_est} vs {rr}");
+                err[bits] += (Refiner::new(&q, bits).estimate(&sign_code(&r), &planes[..np], f) - truth).powi(2) as f64;
+            }
+        }
+        assert!(err[3] < 0.5 * err[2], "3-bit error {} not well below 2-bit {}", err[3], err[2]);
+    }
 
     #[test]
     fn kmeans_finds_separated_clusters() {

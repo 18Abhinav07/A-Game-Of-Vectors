@@ -42,6 +42,9 @@ enum Cmd {
         sample: usize,
         #[arg(long, default_value_t = 10)]
         iters: usize,
+        /// Refinement code width stored per slot (D20): 1 = 1-bit codes only.
+        #[arg(long, default_value_t = 1)]
+        bits: usize,
     },
     Add {
         #[arg(long)]
@@ -64,7 +67,8 @@ enum Cmd {
         queries: PathBuf,
         #[arg(long)]
         gt: PathBuf,
-        /// nprobe:cand, comma separated.
+        /// nprobe:cand[:refine], comma separated (refine: the 1-bit shortlist re-estimated by a
+        /// multi-bit index before the best `cand` are reranked).
         #[arg(long, default_value = "32:500,64:500,128:1000,256:1000")]
         configs: String,
         /// Use the first this many queries.
@@ -85,6 +89,10 @@ enum Cmd {
         /// Also report how many true top-10 rows reach the candidates.
         #[arg(long)]
         diag: bool,
+        /// Pin the hottest leaves in RAM up to this many GiB. Hotness is learned from the
+        /// held-out queries (those after the first `nq`), never from the evaluated ones.
+        #[arg(long, default_value_t = 0.0)]
+        hot_gb: f64,
     },
 }
 
@@ -130,12 +138,14 @@ fn pct(v: &mut [f64], p: f64) -> f64 {
 fn main() -> Result<()> {
     let a = Args::parse();
     match a.cmd {
-        Cmd::Train { base, rows, k1, k2, sample, iters } => {
+        Cmd::Train { base, rows, k1, k2, sample, iters, bits } => {
             let m = bigann::map_base(&base)?;
             let b = m.as_slice();
             let b = &b[..rows.map_or(b.len(), |r| r * D)];
+            anyhow::ensure!((1..=bigann::MAX_BITS).contains(&bits), "--bits must be 1..={}", bigann::MAX_BITS);
             let st = bigann::train(b, &a.index, k1, k2, sample, iters)?;
-            log(&a.log, serde_json::json!({"kind": "train", "index": a.index, "k1": k1, "k2": k2, "leaves": st.leaves, "sample": sample, "iters": iters, "seconds": st.seconds}))?;
+            sieve::store::write_vec(&a.index.join("bits.u64"), &[bits as u64])?;
+            log(&a.log, serde_json::json!({"kind": "train", "index": a.index, "k1": k1, "k2": k2, "leaves": st.leaves, "bits": bits, "sample": sample, "iters": iters, "seconds": st.seconds}))?;
         }
         Cmd::Add { base, first, rows, buckets } => {
             let model = Model::open(&a.index)?;
@@ -160,23 +170,40 @@ fn main() -> Result<()> {
             );
             log(&a.log, serde_json::json!({"kind": "pack", "index": a.index, "slots": st.slots, "leaves": k, "bytes": st.bytes, "max_leaf": st.max_leaf, "empty": st.empty, "seconds": s}))?;
         }
-        Cmd::Search { queries, gt, configs, nq, cold, cache_mb, label, base_dir, diag } => {
+        Cmd::Search { queries, gt, configs, nq, cold, cache_mb, label, base_dir, diag, hot_gb } => {
             let (qn, qd, qs) = bigann::read_bin::<i8>(&queries)?;
             anyhow::ensure!(qd == D, "queries are {qd}-dim");
             let (gn, gk, gt_ids, gt_dist) = bigann::read_gt(&gt)?;
             anyhow::ensure!(gn == qn, "ground truth has {gn} queries, query file {qn}");
             let nq = nq.min(qn);
-            let qs: Vec<[i8; D]> = qs.chunks_exact(D).take(nq).map(|q| q.try_into().unwrap()).collect();
+            let all: Vec<[i8; D]> = qs.chunks_exact(D).map(|q| q.try_into().unwrap()).collect();
+            let qs = &all[..nq];
             let index = Index::open(&a.index, &base_dir, cache_mb << 20)?;
             let rows: u64 = index.postings.file_bytes();
             eprintln!("{} leaves, postings {:.2} GB, {nq} queries", index.model.k(), rows as f64 / 1e9);
+            let mut hot_bytes = 0;
+            if hot_gb > 0.0 {
+                anyhow::ensure!(nq < qn, "--hot-gb learns from the queries after the first --nq; none are left");
+                let nprobe = configs.split(',').filter_map(|c| c.split(':').next()?.parse::<usize>().ok()).max().unwrap_or(64);
+                let t0 = Instant::now();
+                let hot = bigann::hot_leaves(&index, &all[nq..], nprobe, (hot_gb * (1u64 << 30) as f64) as u64);
+                hot_bytes = index.postings.pin(&hot);
+                eprintln!(
+                    "pinned {} hottest leaves ({:.2} GiB, learned from {} held-out queries at nprobe {nprobe}) in {:.1} s",
+                    hot.len(),
+                    hot_bytes as f64 / (1u64 << 30) as f64,
+                    qn - nq,
+                    t0.elapsed().as_secs_f64()
+                );
+            }
             for cfg in configs.split(',') {
                 let mut it = cfg.split(':');
                 let nprobe: usize = it.next().unwrap().parse()?;
                 let cand: usize = it.next().unwrap_or("500").parse()?;
-                let p = Params { nprobe, cand, k: 10 };
+                let refine: usize = it.next().unwrap_or("0").parse()?;
+                let p = Params { nprobe, cand, k: 10, refine };
                 if diag {
-                    diagnose(&index, &qs, &gt_ids, &gt_dist, gk, &p);
+                    diagnose(&index, qs, &gt_ids, &gt_dist, gk, &p);
                 }
                 if cold {
                     index.go_cold(&a.index)?;
@@ -215,8 +242,8 @@ fn main() -> Result<()> {
                     tm.scanned as f64 / n
                 );
                 log(&a.log, serde_json::json!({
-                    "kind": "search", "label": label, "index": a.index, "gt": gt, "nq": nq, "nprobe": nprobe, "cand": cand,
-                    "cold": cold, "cache_mb": cache_mb, "recall10": rec / n, "p50_ms": p50, "p99_ms": p99, "mean_ms": mean,
+                    "kind": "search", "label": label, "index": a.index, "gt": gt, "nq": nq, "nprobe": nprobe, "cand": cand, "refine": refine, "bits": index.model.bits,
+                    "cold": cold, "cache_mb": cache_mb, "hot_bytes": hot_bytes, "recall10": rec / n, "p50_ms": p50, "p99_ms": p99, "mean_ms": mean,
                     "route_ms": ms(tm.route), "scan_ms": ms(tm.scan), "io_ms": ms(tm.io_wait), "rerank_ms": ms(tm.rerank),
                     "scanned": tm.scanned as f64 / n, "mb_per_query": mb, "qps": qps,
                 }))?;

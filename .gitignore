@@ -2,3 +2,4 @@ data/
 /target
 *.part
 .venv-bench/
+results/spacev-diag.bin

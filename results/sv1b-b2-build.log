@@ -1,0 +1,12 @@
+added 100000000 rows from id 0 in 87 s (1145526 rows/s)
+added 100000000 rows from id 100000000 in 88 s (1137681 rows/s)
+added 100000000 rows from id 200000000 in 88 s (1142675 rows/s)
+added 100000000 rows from id 300000000 in 86 s (1157557 rows/s)
+added 100000000 rows from id 400000000 in 86 s (1168550 rows/s)
+added 100000000 rows from id 500000000 in 87 s (1155331 rows/s)
+added 100000000 rows from id 600000000 in 83 s (1200697 rows/s)
+added 100000000 rows from id 700000000 in 84 s (1197124 rows/s)
+added 100000000 rows from id 800000000 in 87 s (1147457 rows/s)
+added 100000000 rows from id 900000000 in 86 s (1164251 rows/s)
+packed 1000000000 slots into 131072 leaves, 48.33 GB, largest leaf 129388, empty 0, 101 s
+total 965 s

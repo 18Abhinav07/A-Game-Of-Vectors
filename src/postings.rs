@@ -25,7 +25,12 @@ use crate::lut::{BLOCK, BLOCK_BYTES};
 
 /// Bytes of one block's slice of a record with `block_bytes` of codes per block.
 pub const fn block_record(block_bytes: usize) -> usize {
-    block_bytes + BLOCK * 2 * 4 + BLOCK * 4
+    block_record_ext(block_bytes, 0)
+}
+
+/// As `block_record`, for records that end with `extra` more bytes per slot.
+pub const fn block_record_ext(block_bytes: usize, extra: usize) -> usize {
+    block_bytes + BLOCK * 2 * 4 + BLOCK * 4 + BLOCK * extra
 }
 use crate::store::{Mapped, read_vec, write_vec};
 
@@ -39,6 +44,8 @@ pub struct Record {
     nb: usize,
     /// Code bytes per block: BLOCK_BYTES for the M1 index, 512 for SPACEV (D19).
     bb: usize,
+    /// Bytes per slot after the ids (SPACEV's multi-bit refinement, D20), a multiple of 4.
+    extra: usize,
     words: Vec<u32>,
 }
 
@@ -59,6 +66,12 @@ impl Record {
     pub fn ids(&self) -> &[u32] {
         let a = (self.nb * self.bb + self.nb * BLOCK * 8) / 4;
         &self.words[a..a + self.nb * BLOCK]
+    }
+
+    /// The per-slot extra section: `extra` bytes for each of the nb · BLOCK slots.
+    pub fn extra(&self) -> &[u8] {
+        let a = self.nb * self.bb + self.nb * BLOCK * 12;
+        &self.bytes()[a..a + self.nb * BLOCK * self.extra]
     }
 
     fn len_bytes(&self) -> usize {
@@ -174,7 +187,10 @@ pub struct Postings {
     off: Vec<u64>,
     nblocks: Vec<u32>,
     bb: usize,
+    extra: usize,
     cache: Option<Cache>,
+    /// Records held in RAM for the life of the index (`pin`), checked before the cache.
+    pinned: std::sync::OnceLock<Vec<Option<Arc<Record>>>>,
     pub stats: IoStats,
 }
 
@@ -186,6 +202,12 @@ impl Postings {
 
     /// As `open`, for records whose blocks hold `block_bytes` of codes.
     pub fn open_with(dir: &Path, cache_bytes: usize, block_bytes: usize) -> Result<Self> {
+        Self::open_ext(dir, cache_bytes, block_bytes, 0)
+    }
+
+    /// As `open_with`, for records with `extra` bytes per slot after the ids.
+    pub fn open_ext(dir: &Path, cache_bytes: usize, block_bytes: usize, extra: usize) -> Result<Self> {
+        assert_eq!(extra % 4, 0);
         let off: Vec<u64> = read_vec(&dir.join("postings.off")).context("postings.off: run `index --pack` first")?;
         let block_off: Vec<u64> = read_vec(&dir.join("block_off.u64"))?;
         anyhow::ensure!(off.len() == block_off.len(), "postings.off does not match block_off.u64");
@@ -196,7 +218,9 @@ impl Postings {
             off,
             nblocks,
             bb: block_bytes,
+            extra,
             cache: (cache_bytes > 0).then(|| Cache::new(cache_bytes)),
+            pinned: std::sync::OnceLock::new(),
             stats: IoStats::default(),
         })
     }
@@ -216,6 +240,39 @@ impl Postings {
         }
     }
 
+    /// Bytes of cluster `c`'s record.
+    pub fn record_bytes(&self, c: usize) -> u64 {
+        self.off[c + 1] - self.off[c]
+    }
+
+    /// Reads the records of `clusters` once and keeps them in RAM: a static hot set, chosen
+    /// offline, where the CLOCK cache would churn on a stream whose working set exceeds it.
+    /// Can be called once. Returns the bytes pinned.
+    pub fn pin(&self, clusters: &[u32]) -> u64 {
+        let mut all: Vec<Option<Arc<Record>>> = (0..self.nblocks.len()).map(|_| None).collect();
+        let mut bytes = 0;
+        for (c, r) in clusters.chunks(4096).flat_map(|ch| ch.iter().copied().zip(self.read_all(ch))) {
+            bytes += r.len_bytes() as u64;
+            all[c as usize] = Some(Arc::new(r));
+        }
+        assert!(self.pinned.set(all).is_ok(), "pin called twice");
+        bytes
+    }
+
+    fn read_all(&self, clusters: &[u32]) -> Vec<Record> {
+        let jobs = clusters.iter().map(|&c| self.read_job(c as usize)).collect();
+        crate::store::io_pool().run(jobs)
+    }
+
+    fn read_job(&self, c: usize) -> Box<dyn FnOnce() -> Record + Send> {
+        let (file, nb, off, bb, extra) = (self.file.clone(), self.nblocks[c] as usize, self.off[c], self.bb, self.extra);
+        Box::new(move || {
+            let mut words = vec![0u32; nb * block_record_ext(bb, extra) / 4];
+            file.read_exact_at(bytemuck::cast_slice_mut(&mut words), off).expect("postings.bin read");
+            Record { nb, bb, extra, words }
+        })
+    }
+
     /// The records of `clusters`, in order. Misses are read as jobs on the I/O pool, so a query
     /// keeps one request per missed cluster in flight.
     pub fn fetch(&self, clusters: &[u32]) -> Vec<Arc<Record>> {
@@ -228,23 +285,16 @@ impl Postings {
     /// completion order, so the caller scans while the remaining reads are in flight. Returns
     /// the nanoseconds spent blocked waiting for reads.
     pub fn fetch_each(&self, clusters: &[u32], mut f: impl FnMut(usize, &Arc<Record>)) -> u64 {
-        let hits: Vec<Option<Arc<Record>>> = clusters.iter().map(|&c| self.cache.as_ref().and_then(|cache| cache.get(c))).collect();
+        let pinned = self.pinned.get();
+        let hits: Vec<Option<Arc<Record>>> = clusters
+            .iter()
+            .map(|&c| pinned.and_then(|p| p[c as usize].clone()).or_else(|| self.cache.as_ref().and_then(|cache| cache.get(c))))
+            .collect();
         let miss: Vec<usize> = (0..clusters.len()).filter(|&i| hits[i].is_none()).collect();
         self.stats.hits.fetch_add((clusters.len() - miss.len()) as u64, Relaxed);
         self.stats.misses.fetch_add(miss.len() as u64, Relaxed);
         // Submit the reads before touching the hits, so the device starts working at once.
-        let jobs = miss
-            .iter()
-            .map(|&i| {
-                let c = clusters[i] as usize;
-                let (file, nb, off, bb) = (self.file.clone(), self.nblocks[c] as usize, self.off[c], self.bb);
-                Box::new(move || {
-                    let mut words = vec![0u32; nb * block_record(bb) / 4];
-                    file.read_exact_at(bytemuck::cast_slice_mut(&mut words), off).expect("postings.bin read");
-                    Record { nb, bb, words }
-                }) as Box<dyn FnOnce() -> Record + Send>
-            })
-            .collect();
+        let jobs = miss.iter().map(|&i| self.read_job(clusters[i] as usize)).collect();
         let done = crate::store::io_pool().stream(jobs);
         for (i, r) in hits.iter().enumerate() {
             if let Some(r) = r {
@@ -272,7 +322,7 @@ mod tests {
     use super::*;
 
     fn rec(nb: usize) -> Arc<Record> {
-        Arc::new(Record { nb, bb: BLOCK_BYTES, words: vec![0; nb * BLOCK_RECORD / 4] })
+        Arc::new(Record { nb, bb: BLOCK_BYTES, extra: 0, words: vec![0; nb * BLOCK_RECORD / 4] })
     }
 
     #[test]

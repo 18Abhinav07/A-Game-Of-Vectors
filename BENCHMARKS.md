@@ -474,6 +474,76 @@ What this says:
   R@10 0.850 at 10M 64:500 against 0.927 exact. Their score error std (206) is far above the
   10th-to-11th neighbour gap (median 60 at 10M, 26 at 1B).
 
+### At the device limit (DESIGN.md D20): page reads, a 12 GiB pinned hot set, 2-bit refinement
+Device ceilings on the uncached postings file (`examples/iobench.rs`): random 100 B or 512 B
+reads 138k/s, random 4 KiB 223k/s (64 threads) and 241k/s (128), random 8 KiB 185k/s,
+sequential 256 KiB 3.6 GB/s. The hot set is learned from held-out queries 10,000–29,315 by
+hits per byte at each run's nprobe; queries 0–9,999 are evaluated. Everything not pinned is
+read with F_NOCACHE, including the rerank rows. Config: `nprobe:cand[:refine]`.
+
+Offline, 1B, 1,000 held-out queries, nprobe 64, R@10 after reranking the top-k by each estimate
+(`examples/spacev_refine.rs`):
+
+| estimate (rms error) | 20 | 50 | 100 | 200 | 500 |
+|---|---|---|---|---|---|
+| 1-bit (1,899) | 0.618 | 0.771 | 0.841 | 0.887 | 0.917 |
+| 2-bit (869) | 0.797 | 0.889 | 0.917 | 0.928 | 0.932 |
+| 3-bit (478) | 0.898 | 0.928 | 0.931 | 0.932 | 0.932 |
+| 4-bit (264) | 0.923 | 0.932 | 0.932 | 0.932 | 0.932 |
+
+100M, bit width at equal RAM (1.2 GiB pinned, cold otherwise):
+
+| bits (slot) | config | R@10 | p50 | p99 | QPS | MB/q |
+|---|---|---|---|---|---|---|
+| 1 (28 B) | 64:500 | 0.898 | 4.70 ms | 63.4 ms | 264 | 3.6 |
+| 1 | 64:1000 | 0.910 | 6.77 ms | 16.5 ms | 136 | 3.6 |
+| 2 (48 B) | 48:100:1000 | 0.899 | 3.41 ms | 9.99 ms | 333 | 8.1 |
+| 2 | 64:100:1000 | 0.914 | 4.08 ms | 10.6 ms | 268 | 10.7 |
+| 3 (64 B) | 48:50:1000 | 0.902 | 4.15 ms | 9.86 ms | 266 | 12.8 |
+| 3 | 64:50:1000 | 0.917 | 5.37 ms | 13.5 ms | 194 | 16.9 |
+
+1B, 10,000 queries, cold except the pinned set:
+
+| index | hot set | config | R@10 | p50 | p99 | QPS | MB/q |
+|---|---|---|---|---|---|---|---|
+| 1-bit, D19 (warm) | page cache | 64:500 | 0.911 | 7.25 ms | 9.87 ms | 147 | |
+| 1-bit, page reads | none | 64:500 | 0.911 | 8.03 ms | | 130 | 14.8 |
+| 1-bit, page reads | 12 GiB | 64:500 | 0.911 | 4.46 ms | | 266 | 3.7 |
+| 1-bit, page reads | 12 GiB | 64:1000 | 0.922 | 6.83 ms | | 164 | 3.7 |
+| 2-bit | 12 GiB | 32:100:1000 | 0.896 | 3.13 ms | 6.47 ms | 458 | 6.1 |
+| 2-bit | 12 GiB | 40:100:1000 | 0.906 | 3.48 ms | 7.24 ms | 372 | 7.5 |
+| 2-bit | 12 GiB | 48:100:1000 | 0.914 | 3.88 ms | 8.31 ms | 345 | 8.9 |
+| 2-bit | 12 GiB | 64:100:1000 | 0.925 | 4.61 ms | 10.5 ms | 275 | 11.6 |
+| 2-bit | 12 GiB | 64:150:2000 | 0.929 | 4.83 ms | 10.3 ms | 254 | 11.6 |
+| 2-bit | 12 GiB | 128:200:2000 | 0.951 | 8.18 ms | 17.5 ms | 137 | 22.6 |
+
+2-bit 1B build: train reused, ten adds at 83–88 s (1.15M rows/s), pack 101 s, 965 s in all;
+48.33 GB of postings. 2-bit stage means at 48:100:1000 (ms): route 0.35, scan 1.53, posting
+I/O 1.41, rerank 0.81. 47.5k–50k leaves fit in 12 GiB depending on nprobe.
+
+Against the published NeurIPS'21 big-ann results on msspacev-1B (Simhadri et al., PMLR 176,
+2022; [track README](https://github.com/harsha-simhadri/big-ann-benchmarks/blob/main/neurips21/t1_t2/README.md)):
+
+| system | hardware | R@10 | QPS |
+|---|---|---|---|
+| T2 DiskANN baseline | 8 vCPU, 64 GB RAM, 1 TB NVMe | 0.901 | 1,500 (bar) |
+| T2 kota-t2 | same | 0.904 | 1,500 (bar) |
+| T2 BBANN | same | 0.760 | 1,500 (bar) |
+| T1 FAISS baseline (in RAM) | 32 vCPU, 64 GB | 0.729 | 10,000 (bar) |
+| T1 best (kst_ann_t1) | same | 0.765 | 10,000 (bar) |
+| sieve 2-bit, 40:100:1000 | M4 Pro laptop, 24 GB RAM (12 GiB pinned) | 0.906 | 372 |
+| sieve 2-bit, 128:200:2000 | same | 0.951 | 137 |
+
+What this says:
+- **2.5× the QPS of D19 at equal or better recall, fully cold apart from the pinned set.** The
+  hot set halves posting traffic, page-sized reads raise rerank IOPS, and 2-bit refinement cuts
+  the rerank from 500–1,000 rows to 100 at the same recall.
+- **2-bit beats 3-bit end to end** even though 3-bit ranks better offline: larger slots cost
+  scan bandwidth and fit fewer leaves in the same hot set.
+- **The SSD is now the limit.** At 48:100:1000, posting reads run at 3.1 GB/s against a 3.6
+  GB/s ceiling. DiskANN on the T2 machine does about 4× the QPS at 0.90 with 64 GB of RAM;
+  this laptop has 24 GB and pins 12.
+
 ### macOS read path (`examples/preadbench.rs`, `examples/faultbench.rs`)
 | | per read |
 |---|---|

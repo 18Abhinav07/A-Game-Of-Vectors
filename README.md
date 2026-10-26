@@ -5,8 +5,9 @@ A Rust vector search engine that reproduces, measures and extends the design Exa
 It serves **113.5M passages** (the TREC-RAG 2024 MS MARCO v2.1 corpus, Arctic-Embed-M v1.5)
 on one 24 GB laptop: R@10 0.909 at 4.8 ms p50 and 460 QPS with the codes in RAM, or R@10 0.902
 at 13 ms in **225 MB of RAM** with everything on SSD. On **1 billion vectors** (MS SPACEV-1B) the
-same laptop builds an index in about 15 minutes and serves R@10 0.911 at 7.3 ms p50, or 0.964 at
-28 ms, in 298 MB of RAM.
+same laptop builds an index in about 22 minutes and serves R@10 0.906 at 372 QPS (3.5 ms p50)
+or 0.951 at 137 QPS with 12 GiB of RAM and everything else read cold from SSD, or R@10 0.911 at
+7.3 ms in 298 MB of RAM.
 
 Exa's post describes the design but publishes no recall or latency numbers. This repo
 measures it against exact search and NIST relevance labels, finds where it loses recall,
@@ -52,7 +53,9 @@ and fixes that.
   10 GB chunks, two-level k-means into 131,072 leaves, out-of-core encode and pack (28 GB of
   postings), and an exact rerank read straight from the downloaded chunks. Compressed 4-bit
   rerank rows lost 8 points of recall, so they were dropped. Recall does not fall from 100M to
-  1B at a fixed config.
+  1B at a fixed config. Page-aligned reads, a hot set pinned by hits per byte (learned from
+  held-out queries) and a 2-bit refinement of the shortlist take it from 147 to 372 QPS at
+  R@10 0.906, until the SSD's 3.6 GB/s is the limit.
 - **Measured against FAISS** (IVF-PQ, fast-scan PQ, IVF-RaBitQ) at the same code budget.
 - **Integer rerank** on `sdot` (int8 query × int8 row) and centroid routing on AMX via
   Accelerate.
@@ -104,9 +107,29 @@ big-ann-benchmarks SPACEV-1B set instead, on the same 24 GB laptop with no cloud
   with the download), pack 38 s. Disk: 28.3 GB of postings and the 100 GB of base chunks,
   which double as the exact rerank store.
 - **RAM is not the limit**: search peaks at 298 MB of RSS. It scales with the leaf count, not N.
-- **The bottleneck is the exact rerank**: 100 GB of rows cannot be cached in 24 GB, so 55–70% of query
-  time is reading candidate rows from SSD, and warm is barely faster than cold. Fewer, better
-  candidates (a RAM middle tier or a bound-driven cut) are the next lever, then more nodes.
+- **The bottleneck was the exact rerank**: 100 GB of rows cannot be cached in 24 GB, so 55–70%
+  of query time went to reading candidate rows, and warm was barely faster than cold.
+
+### Spending 12 GiB of RAM on it (DESIGN.md D20)
+| 2-bit, 12 GiB pinned, rest cold | R@10 | p50 | p99 | QPS |
+|---|---|---|---|---|
+| 32:100:1000 | 0.896 | 3.1 ms | 6.5 ms | 458 |
+| 40:100:1000 | 0.906 | 3.5 ms | 7.2 ms | 372 |
+| 48:100:1000 | 0.914 | 3.9 ms | 8.3 ms | 345 |
+| 64:100:1000 | 0.925 | 4.6 ms | 10.5 ms | 275 |
+| 128:200:2000 | 0.951 | 8.2 ms | 17.5 ms | 137 |
+
+- **Reads the device likes**: sub-page random reads cap at 138k/s on this SSD, 4 KiB pages at
+  223k/s, so the rerank reads whole aligned pages.
+- **A pinned hot set, not the page cache**: rerank traffic flushes the OS cache, so the leaves
+  with the most probe hits per byte, learned from held-out queries, are read once into RAM.
+  12 GiB covers 75% of probed bytes.
+- **2-bit refinement**: the extended-RaBitQ low plane plus one scale per slot (48 B instead of
+  28 B) re-estimates the 1,000-slot shortlist, so 100 exact reads do the work of 1,000. At equal
+  RAM it beats 1-bit and 3-bit at 100M.
+- **Against the NeurIPS'21 SSD track**: DiskANN reached R@10 0.901 at the 1,500 QPS bar on an
+  8-vCPU, 64 GB machine. This laptop gets 0.906 at 372 QPS with 24 GB, about a quarter of the
+  throughput on a third of the RAM, and the SSD's 3.6 GB/s is now the limit.
 
 ## Production gaps
 What a real service would still need, roughly in order:
@@ -136,7 +159,7 @@ cargo test --release
 Binaries: `ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
 `search [--ssd --cache-mb N] [--shards host:port,... [--two-phase]] eval | routing | bench [--cold]`,
 `search live` (delete, reinsert, replay, compact), `bm25` (inverted index from the passage text),
-`search hybrid | filter`, `shard --shard i --of n --listen host:port [--ssd]`, `spacev train | add | pack | search [--cold]`
+`search hybrid | filter`, `shard --shard i --of n --listen host:port [--ssd]`, `spacev train [--bits 2] | add | pack | search [--cold] [--hot-gb N]`
 (SPACEV-1B). Config strings are
 `nprobe:cand:rerank[:bM[xW]][:pΔ][:sN[k]]`, with rerank one of `none | prefix | full | tieredN | ssdN`.
 
