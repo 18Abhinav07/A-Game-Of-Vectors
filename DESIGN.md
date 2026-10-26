@@ -377,6 +377,58 @@ list's terms. nDCG@10 on the M1 slice, exact dense / BM25 / fused:
   own product exposes keyword and neural search as separate modes, which fits this result.
   (`results/m1-hybrid.jsonl`, `results/m1-filter.jsonl`)
 
+### D19. One billion vectors: MS SPACEV-1B on one laptop
+M1 and M2 stop at 113.5M passages because that is the whole embedded corpus. To test the 1B
+claim directly, `src/bigann.rs` and `bin/spacev` index **MS SPACEV-1B** (big-ann-benchmarks
+NeurIPS'21: 1B × 100-d int8 Bing web-document vectors, L2, 29,316 queries, ground truth for the
+10M, 100M and 1B prefixes) on the same M4 Pro, 24 GB RAM, with no cloud.
+- **L2 through the same kernel.** Rows rank by 2⟨q,x⟩ − ‖x‖². ⟨q,x⟩ = ⟨q,c⟩ + ⟨q,r⟩ splits as
+  in D12, and ‖x‖² is stored exactly per slot (the vectors are int8, so it is an exact integer),
+  so the RaBitQ code still estimates only the residual term. 100 dims pad to 128: 16-byte codes,
+  32 LUT groups. `Lut`, `Query` and the record layout became generic over the group count;
+  the M1/M2 paths are unchanged (G = 64 by default).
+- **Two-level centroids.** 131,072 flat leaves would cost 1B × 131k × 100 × 2 flops to assign:
+  hours of sgemm. Leaves are trained per coarse cell instead (K1 512 coarse × K2 256 fine, each
+  cell's k-means in parallel), and a row picks the best child among its 4 nearest coarse
+  cells: about 1.5k centroid dots per row. Queries still route over all leaves with one sgemv.
+- **Out-of-core build.** The base arrives as ten 10 GB chunks (`scripts/spacev.sh`: 16 parallel
+  range requests written in place, ~5 minutes per chunk). `add` encodes one chunk into run files
+  bucketed by leaf range and sorted. `pack` streams the buckets in leaf order into the D13 SSD
+  records and deletes each bucket's runs once written. Encoding runs at 2M rows/s: 50 s per
+  100M rows.
+- **Ties.** At 1B, 30.8% of queries have a tie at rank 10 (mostly exact duplicates at distance
+  0); at 10M, 0.75%. Recall follows big-ann's rule: a result counts if it is any ground-truth
+  row at most as far as the 10th.
+- **Exact rerank from the chunks themselves, not compressed rows.** The first design kept a
+  4-bit residual row per vector (54 B: f16 offset and step, a nibble per dim) and deleted the
+  chunks. It cost 8 points: R@10 0.850 against 0.928 for an exact rerank of the same 500
+  candidates at 10M. Measured on 20k rows, its score error has std 206 while the median gap
+  between the 10th and 11th neighbour is 60 at 10M and 26 at 1B. 6 bits gives std 49 and
+  8 bits std 12, and 8 bits costs as much disk as the raw int8 rows. So the downloaded chunks
+  are the rerank store: a candidate's row is read at (id mod 1e8)·100 in base.(id / 1e8). Disk
+  at 1B: 100 GB of chunks, ~28 GB of postings, ~32 GB of transient runs.
+- **Rerank reads are pread on the I/O pool, not mmap.** On macOS, cached preads on one file
+  serialise: 0.44 µs per read on one thread, 1.1 µs aggregate at 12 to 32 threads
+  (`examples/preadbench.rs`). mmap hits cost 0.15 µs and scale, and `mincore` to sort hits from
+  misses costs 0.46 µs and serialises too. But misses decide it: on an evicted file, mmap faults
+  cost 107 µs aggregate at 64 threads against 9.3 µs for preads (`examples/faultbench.rs`).
+  100 GB of rows cannot stay in 24 GB of RAM, so at 1B nearly every rerank read is a miss.
+  Ten chunk files also spread the per-file lock.
+- **Result.** The 1B index builds in about 15 minutes of compute once the chunks are on disk:
+  train 326 s (the coarse step's random-row gather was 311 s of it; the sample ids are now
+  sorted first, which this run predates), ten adds at 54–60 s each (1.8M rows/s), and pack in
+  38 s for 28.3 GB of postings. Search holds 298 MB of RSS. At 64 probes and 500 candidates,
+  R@10 is 0.911 at 7.3 ms p50 and 147 QPS; 128:1000 gives 0.942 at 14.6 ms; 256:2000 gives 0.964
+  at 28 ms. Recall at a fixed nprobe does not fall from 100M to 1B (64:500: 0.899 → 0.911),
+  because the leaf count grew with N (14,336 → 131,072) and the routing sgemv stays under
+  0.5 ms. The rerank reads are 55–70% of query time, and cold runs are only 2–4 ms slower than
+  warm, because warm is already missing on 100 GB of chunks. That cost, not the scan, is what
+  the next step would attack: fewer candidates via a bound-driven cut (D11) or a 6–8-bit
+  middle tier in RAM (D9) to pick the rows worth reading.
+- **Leaf imbalance.** The largest 1B leaf holds 129,388 slots, 17× the mean of 7,629, and the
+  top-4 coarse assignment does nothing to cap it. Balanced k-means or splitting oversized
+  leaves would cut the scan tail.
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.

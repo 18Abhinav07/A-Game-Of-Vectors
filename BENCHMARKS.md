@@ -420,3 +420,66 @@ What this says:
   probing, whose probe set concentrates on fewer, hotter clusters.
 - Margin probing gives the best median in both modes (3.89 ms RAM, 7.2 ms SSD) but the worst
   tail: flat-score queries probe up to the 256 cap, into large clusters.
+
+## SPACEV-1B: one billion vectors (DESIGN.md D19)
+
+MS SPACEV-1B from big-ann-benchmarks (NeurIPS'21): 1B × 100-d int8, L2. Queries are the public
+query set, with each prefix's own ground truth (10M and 100M: first 5,000 queries; 1B: 10,000
+warm, 2,000 cold). R@10 is tie-aware as in big-ann: a result counts if it is any ground-truth
+row at most as far as the 10th (30.8% of 1B queries have a tie at rank 10). Index: RaBitQ
+128-bit residual codes, two-level k-means leaves, top-500/1000/2000 candidates reranked exactly
+from the int8 base chunks with pooled `pread`. Logs: `results/spacev.jsonl`,
+`results/spacev-dev.jsonl`; reproduce with `scripts/spacev.sh` (download) and
+`scripts/spacev-1b.sh` (build and search).
+
+### Build
+| | 10M | 100M | 1B |
+|---|---|---|---|
+| leaves (K1 × K2) | 64 × 24 = 1,536 | 128 × 112 = 14,336 | 512 × 256 = 131,072 |
+| train | 4.6 s | 64 s | 326 s |
+| add (encode + run files) | 3.4 s | 50 s | 10 × 54–60 s (1.8M rows/s) |
+| pack | 0.2 s | 2 s | 38 s |
+| postings on SSD | 0.28 GB | 2.83 GB | 28.32 GB |
+| largest leaf (mean) | 99,023 (6,510) | 51,396 (6,975) | 129,388 (7,629) |
+| rerank store | first 1 GB of chunk 0 | 10 GB of chunks | 100 GB of chunks |
+
+Download: ten 10 GB chunks at 303–325 s each (16 parallel range requests), overlapped with the
+adds. At 1B, search peak RSS is 298 MB (`/usr/bin/time -l`, 64:500 cold).
+
+### Search
+| nprobe:cand | 100M R@10 | p50 | p99 | QPS | 1B R@10 | p50 | p99 | QPS |
+|---|---|---|---|---|---|---|---|---|
+| 32:500 | 0.864 | 1.27 ms | 3.66 ms | 1,353 | | | | |
+| 64:500 | 0.899 | 2.15 ms | 3.59 ms | 842 | 0.911 | 7.25 ms | 9.87 ms | 147 |
+| 64:1000 | 0.911 | 3.46 ms | 6.72 ms | 414 | 0.922 | 12.08 ms | 15.94 ms | 86 |
+| 128:1000 | 0.938 | 4.95 ms | 11.9 ms | 374 | 0.942 | 14.56 ms | 24.2 ms | 69 |
+| 256:2000 | 0.965 | 7.42 ms | 10.6 ms | 230 | 0.964 | 28.19 ms | 37.3 ms | 35 |
+| 64:1000 cold | 0.910 | 14.2 ms | 18.5 ms | 56 | 0.926 | 14.15 ms | 21.1 ms | 73 |
+| 128:1000 cold | 0.938 | 20.3 ms | 42.6 ms | 51 | 0.944 | 18.20 ms | 25.4 ms | 55 |
+
+1B stage means (ms) for the warm runs: route 0.37–0.47, scan 0.97–3.60, posting I/O 1.67–7.67,
+rerank 4.28–16.60. Cold uses a different 2,000-query sample, so its recall is not comparable
+to warm to the third decimal. 100M warm ran right after the 1B runs, with the page cache full
+of 1B data.
+
+At 10M (1,536 leaves, all rows cached): 64:500 R@10 0.927 at 0.74 ms p50 and 3,241 QPS;
+64:1000 0.940; 256:2000 0.985 at 2.82 ms. Cold 64:1000: 13.7 ms p50, 9.7 ms of it rerank.
+
+What this says:
+- **One laptop serves 1B vectors at R@10 0.91–0.96 in 7–28 ms, in 298 MB of RAM.** Recall at a
+  fixed config does not degrade from 100M to 1B, because the leaf count scaled with N.
+- **The exact rerank is the bottleneck at 1B.** 100 GB of chunks cannot be cached in 24 GB, so
+  rerank cost is linear in candidates (4.3 ms per 500) and warm ≈ cold.
+- **Compressed rerank rows were not good enough.** 4-bit residual rows (54 B per vector) gave
+  R@10 0.850 at 10M 64:500 against 0.927 exact. Their score error std (206) is far above the
+  10th-to-11th neighbour gap (median 60 at 10M, 26 at 1B).
+
+### macOS read path (`examples/preadbench.rs`, `examples/faultbench.rs`)
+| | per read |
+|---|---|
+| cached `pread`, one file, 1 thread | 0.44 µs |
+| cached `pread`, one file, 12–32 threads (aggregate) | ~1.1 µs (serialised) |
+| mmap hit | 0.15 µs |
+| `mincore` residency check | 0.46 µs (serialised) |
+| evicted file, 64 threads: mmap fault | 107 µs aggregate |
+| evicted file, 64 threads: `pread` | 9.3 µs aggregate (~100k IOPS) |
