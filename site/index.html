@@ -261,7 +261,7 @@ footer { position: relative; z-index: 1; background: var(--paper); padding: 120p
 
 <main>
 <section class="statement" id="intro"><div class="wrap">
-  <p id="statement">Exa wrote about how they search the web: send each query to a few clusters, scan compressed codes, then rerank exactly. They shared the idea, not code or numbers. sieve is my own engine built on that idea, written from scratch in Rust, measured end to end, and pushed to a billion vectors on one laptop.</p>
+  <p id="statement">Exa wrote about how they search the web: send each query to a few clusters, scan compressed codes, then rerank exactly. That idea inspired sieve, my own engine written from scratch in Rust, measured end to end, and pushed to a billion vectors on one laptop.</p>
 </div></section>
 
 <section class="numbers"><div class="wrap">
@@ -358,7 +358,7 @@ footer { position: relative; z-index: 1; background: var(--paper); padding: 120p
     <h2>One laptop, public data, every run reproducible.</h2>
   </div>
   <ul class="method" data-reveal>
-    <li><b>Built independently</b>Exa’s post described the architecture and published no code or benchmarks. The implementation, the tuning and every number here are sieve’s own.</li>
+    <li><b>Built independently</b>The architecture was inspired by Exa’s write-up on how they search the web. The implementation, the tuning and every number here are sieve’s own.</li>
     <li><b>One machine</b>Apple M4 Pro, 12 cores, 24 GB of RAM, internal SSD. No servers, no GPU, no cloud.</li>
     <li><b>Public benchmarks</b>MS SPACEV-1B (100-d int8) with official ground truth. Also 113.5M MS MARCO passages: recall 0.909 at 4.8 ms median.</li>
     <li><b>Cold means cold</b>Index files are evicted from the OS page cache before every SSD run, checked with <code>mincore</code>.</li>
