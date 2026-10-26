@@ -369,8 +369,15 @@ pub fn pack(dir: &Path, k: usize, buckets: usize) -> Result<PackStats> {
 /// serial page fault, where the pool keeps 64 reads in flight.
 pub struct Base {
     files: Vec<std::sync::Arc<File>>,
+    lens: std::sync::Arc<Vec<u64>>,
     paths: Vec<PathBuf>,
 }
+
+const PAGE: usize = 4096;
+
+/// Page-aligned read buffer: two pages, for a row that straddles a page boundary.
+#[repr(align(4096))]
+struct Pages([u8; 2 * PAGE]);
 
 impl Base {
     /// base.00, base.01, ... from `dir`, as many as are complete (scripts/spacev.sh writes
@@ -381,12 +388,17 @@ impl Base {
             .take_while(|p| p.with_extension(format!("{}.done", p.extension().unwrap().to_str().unwrap())).exists())
             .collect();
         anyhow::ensure!(!paths.is_empty(), "no base.NN chunks in {}", dir.display());
-        let files = paths.iter().map(|p| File::open(p).map(std::sync::Arc::new)).collect::<std::io::Result<_>>()?;
-        Ok(Self { files, paths })
+        let files: Vec<_> = paths.iter().map(|p| File::open(p).map(std::sync::Arc::new)).collect::<std::io::Result<_>>()?;
+        let lens = files.iter().map(|f| f.metadata().map(|m| m.len())).collect::<std::io::Result<_>>()?;
+        Ok(Self { files, lens: std::sync::Arc::new(lens), paths })
     }
 
     /// Rows of `ids`, in order.
-    fn rows(&self, ids: &[u32]) -> Vec<i8> {
+    ///
+    /// Each row is read as the aligned 4 KiB page(s) holding it: with the page cache bypassed,
+    /// a 100 B read costs the device as much as a page and it completes fewer of them (138k
+    /// against 241k random reads/s on this SSD, examples/iobench.rs).
+    pub fn rows(&self, ids: &[u32]) -> Vec<i8> {
         // One job per pool thread: enough reads in flight to keep the SSD busy when cold, few
         // enough hand-offs that cached reads are not dominated by them.
         let per_job = ids.len().div_ceil(crate::store::io_pool().threads()).max(1);
@@ -394,12 +406,19 @@ impl Base {
             .chunks(per_job)
             .map(|chunk| {
                 let chunk = chunk.to_vec();
-                let files = self.files.clone();
+                let (files, lens) = (self.files.clone(), self.lens.clone());
                 Box::new(move || {
                     let mut rows = vec![0i8; chunk.len() * D];
+                    let mut buf = Box::new(Pages([0; 2 * PAGE]));
                     for (row, &id) in rows.chunks_exact_mut(D).zip(&chunk) {
-                        let (c, r) = (id as u64 / CHUNK_ROWS, id as u64 % CHUNK_ROWS);
-                        files[c as usize].read_exact_at(bytemuck::cast_slice_mut(row), r * D as u64).expect("base read");
+                        let (c, r) = ((id as u64 / CHUNK_ROWS) as usize, id as u64 % CHUNK_ROWS);
+                        let at = r * D as u64;
+                        let start = at / PAGE as u64 * PAGE as u64;
+                        let end = (at + D as u64).next_multiple_of(PAGE as u64).min(lens[c]);
+                        let page = &mut buf.0[..(end - start) as usize];
+                        files[c].read_exact_at(page, start).expect("base read");
+                        let o = (at - start) as usize;
+                        row.copy_from_slice(bytemuck::cast_slice(&page[o..o + D]));
                     }
                     rows
                 }) as Box<dyn FnOnce() -> Vec<i8> + Send>
@@ -409,13 +428,43 @@ impl Base {
     }
 
     /// Drops the chunks from the page cache and bypasses it from now on.
-    fn go_cold(&self) -> Result<()> {
+    pub fn go_cold(&self) -> Result<()> {
         for (f, p) in self.files.iter().zip(&self.paths) {
             crate::store::no_cache(f);
             crate::store::evict(p)?;
         }
         Ok(())
     }
+}
+
+/// Leaves to pin under `budget` bytes, hottest per byte first: how often `qs` probe a leaf at
+/// `nprobe`, divided by its record size, is the read traffic a byte of RAM saves.
+pub fn hot_leaves(index: &Index, qs: &[[i8; D]], nprobe: usize, budget: u64) -> Vec<u32> {
+    use rayon::prelude::*;
+    let k = index.model.k();
+    let p = Params { nprobe, cand: 1, k: 10 };
+    let hits = qs
+        .par_iter()
+        .fold(
+            || vec![0u32; k],
+            |mut h, q| {
+                index.route(q, &p, &mut Timing::default()).0.iter().for_each(|&c| h[c as usize] += 1);
+                h
+            },
+        )
+        .reduce(|| vec![0u32; k], |a, b| a.iter().zip(&b).map(|(x, y)| x + y).collect());
+    let heat = |c: usize| hits[c] as f64 / index.postings.record_bytes(c).max(1) as f64;
+    let mut order: Vec<usize> = (0..k).filter(|&c| hits[c] > 0).collect();
+    order.sort_by(|&a, &b| heat(b).total_cmp(&heat(a)));
+    let mut used = 0;
+    order
+        .into_iter()
+        .take_while(|&c| {
+            used += index.postings.record_bytes(c);
+            used <= budget
+        })
+        .map(|c| c as u32)
+        .collect()
 }
 
 pub struct Index {
@@ -480,13 +529,13 @@ impl Index {
     }
 
     /// The `p.cand` best slots of the probed leaves by code estimate, best first, as
-    /// (id, ⟨q,c⟩, ‖x‖²).
+    /// (id, estimate, ‖x‖²).
     pub fn candidates(&self, q: &[i8; D], probe: &[u32], dots: &[f32], p: &Params, t: &mut Timing) -> Vec<(u32, f32, f32)> {
         let t1 = Instant::now();
         let mut qp = [0f32; PD];
         qp.iter_mut().zip(q).for_each(|(o, &x)| *o = x as f32);
         let rq: rabitq::Query<G> = rabitq::Query::new(&self.model.rot, &qp);
-        // (id, ⟨q,c⟩, ‖x‖²) of every slot admitted to the candidate top-k, indexed by its u32.
+        // (id, estimate, ‖x‖²) of every slot admitted to the candidate top-k, indexed by its u32.
         let mut info: Vec<(u32, f32, f32)> = Vec::new();
         let mut cand = TopK::new(p.cand);
         let (mut scores, mut scanned) = (Vec::new(), 0u64);
@@ -503,7 +552,7 @@ impl Index {
                 let est = 2.0 * (cent + mul * (rq.a * sc as f32 + rq.b)) - nx;
                 if cand.threshold().is_none_or(|th| est > th) {
                     cand.push(est, info.len() as u32);
-                    info.push((id, cent, nx));
+                    info.push((id, est, nx));
                 }
             }
             scanned += ids.len() as u64;

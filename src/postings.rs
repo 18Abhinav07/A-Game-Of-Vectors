@@ -175,6 +175,8 @@ pub struct Postings {
     nblocks: Vec<u32>,
     bb: usize,
     cache: Option<Cache>,
+    /// Records held in RAM for the life of the index (`pin`), checked before the cache.
+    pinned: std::sync::OnceLock<Vec<Option<Arc<Record>>>>,
     pub stats: IoStats,
 }
 
@@ -197,6 +199,7 @@ impl Postings {
             nblocks,
             bb: block_bytes,
             cache: (cache_bytes > 0).then(|| Cache::new(cache_bytes)),
+            pinned: std::sync::OnceLock::new(),
             stats: IoStats::default(),
         })
     }
@@ -216,6 +219,39 @@ impl Postings {
         }
     }
 
+    /// Bytes of cluster `c`'s record.
+    pub fn record_bytes(&self, c: usize) -> u64 {
+        self.off[c + 1] - self.off[c]
+    }
+
+    /// Reads the records of `clusters` once and keeps them in RAM: a static hot set, chosen
+    /// offline, where the CLOCK cache would churn on a stream whose working set exceeds it.
+    /// Can be called once. Returns the bytes pinned.
+    pub fn pin(&self, clusters: &[u32]) -> u64 {
+        let mut all: Vec<Option<Arc<Record>>> = (0..self.nblocks.len()).map(|_| None).collect();
+        let mut bytes = 0;
+        for (c, r) in clusters.chunks(4096).flat_map(|ch| ch.iter().copied().zip(self.read_all(ch))) {
+            bytes += r.len_bytes() as u64;
+            all[c as usize] = Some(Arc::new(r));
+        }
+        assert!(self.pinned.set(all).is_ok(), "pin called twice");
+        bytes
+    }
+
+    fn read_all(&self, clusters: &[u32]) -> Vec<Record> {
+        let jobs = clusters.iter().map(|&c| self.read_job(c as usize)).collect();
+        crate::store::io_pool().run(jobs)
+    }
+
+    fn read_job(&self, c: usize) -> Box<dyn FnOnce() -> Record + Send> {
+        let (file, nb, off, bb) = (self.file.clone(), self.nblocks[c] as usize, self.off[c], self.bb);
+        Box::new(move || {
+            let mut words = vec![0u32; nb * block_record(bb) / 4];
+            file.read_exact_at(bytemuck::cast_slice_mut(&mut words), off).expect("postings.bin read");
+            Record { nb, bb, words }
+        })
+    }
+
     /// The records of `clusters`, in order. Misses are read as jobs on the I/O pool, so a query
     /// keeps one request per missed cluster in flight.
     pub fn fetch(&self, clusters: &[u32]) -> Vec<Arc<Record>> {
@@ -228,23 +264,16 @@ impl Postings {
     /// completion order, so the caller scans while the remaining reads are in flight. Returns
     /// the nanoseconds spent blocked waiting for reads.
     pub fn fetch_each(&self, clusters: &[u32], mut f: impl FnMut(usize, &Arc<Record>)) -> u64 {
-        let hits: Vec<Option<Arc<Record>>> = clusters.iter().map(|&c| self.cache.as_ref().and_then(|cache| cache.get(c))).collect();
+        let pinned = self.pinned.get();
+        let hits: Vec<Option<Arc<Record>>> = clusters
+            .iter()
+            .map(|&c| pinned.and_then(|p| p[c as usize].clone()).or_else(|| self.cache.as_ref().and_then(|cache| cache.get(c))))
+            .collect();
         let miss: Vec<usize> = (0..clusters.len()).filter(|&i| hits[i].is_none()).collect();
         self.stats.hits.fetch_add((clusters.len() - miss.len()) as u64, Relaxed);
         self.stats.misses.fetch_add(miss.len() as u64, Relaxed);
         // Submit the reads before touching the hits, so the device starts working at once.
-        let jobs = miss
-            .iter()
-            .map(|&i| {
-                let c = clusters[i] as usize;
-                let (file, nb, off, bb) = (self.file.clone(), self.nblocks[c] as usize, self.off[c], self.bb);
-                Box::new(move || {
-                    let mut words = vec![0u32; nb * block_record(bb) / 4];
-                    file.read_exact_at(bytemuck::cast_slice_mut(&mut words), off).expect("postings.bin read");
-                    Record { nb, bb, words }
-                }) as Box<dyn FnOnce() -> Record + Send>
-            })
-            .collect();
+        let jobs = miss.iter().map(|&i| self.read_job(clusters[i] as usize)).collect();
         let done = crate::store::io_pool().stream(jobs);
         for (i, r) in hits.iter().enumerate() {
             if let Some(r) = r {
