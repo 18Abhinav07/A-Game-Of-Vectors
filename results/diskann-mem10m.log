@@ -1,0 +1,70 @@
+######################
+# Running Job 1 of 1 #
+######################
+
+Graph Index Full-Precision Build
+
+               tag: graph-index-build
+              file: /Users/18abhinav07/Documents/exa/data/dann/base10m.i8bin
+         data_type: int8
+        max degree: 64
+           L-build: 100
+             alpha: 1.2
+start point strategy: Medoid
+    backedge ratio: 1
+Using Multi Insert: NO
+start_point_strategy: Medoid
+     build threads: 12
+         Save Path: /Users/18abhinav07/Documents/exa/data/dann/mem10m_R64_L100
+
+
+
+Index Build Time: 169.148231s
+Vectors Inserted: 10000000
+Kind: single insert
+Insert Latencies:
+  average: 202.22519us
+      p90: 320us
+      p99: 665us
+
+ Ls,   KNN,    Avg cmps,   Avg hops,       QPS - mean(max),         Avg Latency,         p99 Latency,    Recall,   Threads
+==========================================================================================================================
+ 10,    10,   1013.4389,    19.0983,     39574.8 (39733.9),     24.8us (24.9us),       51.5us (52us),    0.7984,         1
+ 15,    10,   1231.0553,    24.2102,     29957.8 (30368.7),     32.9us (33.3us),       65.5us (67us),   0.84219,         1
+ 20,    10,   1441.5944,    29.3104,     25045.4 (25375.6),     39.4us (40.0us),       66.5us (69us),   0.87111,         1
+ 30,    10,   1840.5492,    39.3356,     18865.0 (18946.6),     52.5us (52.7us),       82.5us (83us),    0.9034,         1
+ 40,    10,    2222.895,     49.256,     15011.2 (15027.3),     66.1us (66.2us),     100.0us (100us),   0.92268,         1
+ 60,    10,   2958.1025,    69.0329,     10939.6 (10946.9),     90.9us (91.0us),     131.5us (132us),   0.94284,         1
+ 80,    10,   3669.8757,    88.9033,       8668.6 (8734.9),   114.9us (115.7us),     158.0us (162us),   0.95319,         1
+120,    10,    5045.336,   128.5384,       6129.9 (6175.7),   162.6us (163.9us),     219.5us (224us),   0.96522,         1
+160,    10,    6378.616,   168.3498,       4703.5 (4704.7),   212.1us (212.2us),     283.0us (286us),   0.97192,         1
+240,    10,    8950.582,    248.046,       3233.7 (3310.5),   308.9us (316.3us),     436.5us (488us),     0.979,         1
+ 10,    10,   1013.4389,    19.0983,   264623.2 (267315.4),     35.4us (36.8us),       86.5us (90us),    0.7984,        12
+ 15,    10,   1231.0553,    24.2102,   216734.2 (230669.9),     43.5us (43.7us),     139.0us (143us),   0.84219,        12
+ 20,    10,   1441.5944,    29.3104,   178377.0 (185673.4),     52.5us (52.6us),     170.0us (176us),   0.87111,        12
+ 30,    10,   1840.5492,    39.3356,   146124.1 (154216.3),     68.3us (69.0us),     211.5us (221us),    0.9034,        12
+ 40,    10,    2222.895,     49.256,   110909.0 (119403.0),     86.3us (86.8us),     317.5us (321us),   0.92268,        12
+ 60,    10,   2958.1025,    69.0329,     88314.4 (91159.4),   118.3us (119.2us),     455.5us (502us),   0.94284,        12
+ 80,    10,   3669.8757,    88.9033,     74944.6 (79542.5),   143.4us (147.1us),     483.5us (627us),   0.95319,        12
+120,    10,    5045.336,   128.5384,     50520.2 (52396.9),   211.2us (214.2us),    891.0us (1001us),   0.96522,        12
+160,    10,    6378.616,   168.3498,     41554.5 (45067.4),   266.6us (273.6us),     640.0us (719us),   0.97192,        12
+240,    10,    8950.582,    248.046,     27504.0 (27752.2),   399.3us (402.7us),   1551.0us (1629us),     0.979,        12
+
+      196.95 real      1932.11 user        12.57 sys
+          7169556480  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              475310  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 817  voluntary context switches
+             1232353  involuntary context switches
+      17934688105083  instructions retired
+       6887487937164  cycles elapsed
+          7170053736  peak memory footprint

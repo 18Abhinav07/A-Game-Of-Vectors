@@ -493,6 +493,47 @@ is an L2 rule: of the `nprobe` nearest leaves, keep those with ‖q − c‖² �
   m 0.4 capped at 128: 11.2 ms; capped at 96: 10.3 ms). The cap is the tail knob; a scan budget
   (D15) would bound it more tightly.
 
+### D22. Head-to-head with DiskANN on the same laptop
+The big-ann comparison in D20 set numbers from other hardware side by side. This one runs
+Microsoft's DiskANN (the Rust rewrite, upstream `8a9ff2d`) on the same M4 Pro, on the same
+data (the first 10M rows of SPACEV), the same 10,000 queries and the same ground truth.
+- **Making it a fair fight.** DiskANN's disk index has no macOS reader: its fallback copies the
+  whole index file into RAM, so an SSD run would really be an in-RAM run. A small reader
+  (`bench/diskann/macos-reader.patch`, one new file) does `F_NOCACHE` + `pread`, the macOS analogue of its
+  Linux `O_DIRECT` + io_uring path. Index files are evicted before each cold run
+  (`examples/drop_cache.rs`). DiskANN's benchmark scores strict recall (only the first ten
+  ground-truth ids count); sieve now logs that too. At 10M the two agree to 0.001.
+- **In RAM, the graph wins by 45–50×.** DiskANN (R 64, L 100) reaches strict R@10 0.903 at
+  146k QPS (68 µs mean at 12 threads); sieve gets 0.907 at 3.1k QPS. At ~0.945 it is 88k QPS against
+  1.8k. Per query on one thread, sieve scores 222k codes at ~3 ns each, while DiskANN scores
+  1,840 full vectors in 39 hops at ~28 ns each: about 9× cheaper per candidate, but 120× more candidates. Flat IVF must
+  scan whole clusters, and on SPACEV the true top-10 is spread over ~32 of 1,536 of them.
+  This is why my earlier projection (within ~2× of DiskANN) was wrong: I assumed cheap codes
+  would offset the extra candidates, and they cannot.
+- **On SSD at matched RAM (~0.5 GB), it is close.** DiskANN keeps 48-byte PQ codes in RAM
+  (0.48 GB, the same as sieve's pinned postings) and reads 4 KiB graph nodes. sieve reads only
+  its rerank rows. Both are I/O-bound at a similar number of reads per query (30–60 for
+  DiskANN, 50 for sieve):
+  - sieve has **~3× lower latency** (6–7× against DiskANN's peak-throughput setting): its 50 reads go out at once, while DiskANN's 30–60 are a
+    chain of dependent hops (~85 µs each). At 0.93: sieve 1.6 ms mean, DiskANN 4.4–5.2 ms
+    at 12 threads and 10–12 ms at the 48 threads it needs for peak throughput.
+  - DiskANN has **~1.3× more peak throughput** at 0.93: 4,606–4,662 QPS at 0.923–0.930
+    against sieve's 3,583. At low recall the gap is ~2× (7,781 QPS at 0.875 against 3,574
+    at 0.839). sieve tops out at ~178k reads/s whatever its thread counts; DiskANN
+    reaches ~228k.
+  - At the same 12 threads, sieve is ahead on both: 0.930 at 3,313 QPS against DiskANN's
+    0.923–0.930 at 2,265–2,727 (beam 1 and 4).
+- **Build**: sieve 7 s, DiskANN 169 s (in RAM) and 211 s (disk), on 12 threads.
+- **What it means.** Flat IVF is the wrong structure when the index fits in RAM. Its case is
+  the SSD (latency, cheap builds, updates), and there it is level with the best graph index
+  rather than ahead. The way to close the in-RAM gap is SPANN's: many more, smaller posting
+  lists, routed by a graph over their centroids.
+- **Caveats.** DiskANN warns that its AArch64 kernels are unoptimised; that matters for the
+  in-RAM result (DiskANN's lead would grow), not the I/O-bound SSD one. macOS has no io_uring,
+  so a DiskANN beam's reads are issued one after another; beam width 1 was its best setting
+  here anyway. 100M was not run: its disk index (~37 GB plus build scratch) does not fit next
+  to the 1B data on this disk.
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.

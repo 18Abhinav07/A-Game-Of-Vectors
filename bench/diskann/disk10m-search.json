@@ -1,0 +1,63 @@
+{
+  "search_directories": [
+    "/Users/18abhinav07/Documents/exa/data/dann"
+  ],
+  "jobs": [
+    {
+      "type": "disk-index",
+      "content": {
+        "source": {
+          "disk-index-source": "Load",
+          "data_type": "int8",
+          "load_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        },
+        "search_phase": {
+          "queries": "query10k.i8bin",
+          "groundtruth": "gt10m-10k.bin",
+          "search_list": [
+            20,
+            30,
+            40,
+            60,
+            80,
+            120
+          ],
+          "beam_width": 4,
+          "recall_at": 10,
+          "num_threads": 12,
+          "is_flat_search": false,
+          "distance": "squared_l2",
+          "vector_filters_file": null
+        }
+      }
+    },
+    {
+      "type": "disk-index",
+      "content": {
+        "source": {
+          "disk-index-source": "Load",
+          "data_type": "int8",
+          "load_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        },
+        "search_phase": {
+          "queries": "query10k.i8bin",
+          "groundtruth": "gt10m-10k.bin",
+          "search_list": [
+            20,
+            30,
+            40,
+            60,
+            80,
+            120
+          ],
+          "beam_width": 4,
+          "recall_at": 10,
+          "num_threads": 48,
+          "is_flat_search": false,
+          "distance": "squared_l2",
+          "vector_filters_file": null
+        }
+      }
+    }
+  ]
+}

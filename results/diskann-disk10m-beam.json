@@ -1,0 +1,662 @@
+[
+  {
+    "input": {
+      "content": {
+        "search_phase": {
+          "beam_width": 1,
+          "distance": "squared_l2",
+          "groundtruth": "/Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin",
+          "num_nodes_to_cache": null,
+          "num_threads": 12,
+          "post_processor": null,
+          "queries": "/Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin",
+          "recall_at": 10,
+          "search_io_limit": null,
+          "search_list": [
+            20,
+            40
+          ],
+          "search_mode": {
+            "adaptive_l": null,
+            "is_flat_search": false
+          },
+          "vector_filters_file": null
+        },
+        "source": {
+          "data_type": "int8",
+          "disk-index-source": "Load",
+          "load_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        }
+      },
+      "type": "disk-index"
+    },
+    "results": {
+      "build": null,
+      "search": {
+        "beam_width": 1,
+        "distance": "squared_l2",
+        "is_flat_search": false,
+        "num_nodes_to_cache": null,
+        "num_threads": 12,
+        "recall_at": 10,
+        "search_results_per_l": [
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 1440.2149,
+            "mean_cpu_time": 106.674,
+            "mean_hops": 29.812,
+            "mean_io_time": 2551.3616,
+            "mean_ios": 29.812,
+            "mean_latency": 2659.7242,
+            "mean_pq_preprocess_time": 1.6886,
+            "p95_latency": 3554,
+            "p999_latency": 9737,
+            "qps": 4506.79150390625,
+            "recall": 87.46900177001953,
+            "search_l": 20
+          },
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 2188.4006,
+            "mean_cpu_time": 176.4028,
+            "mean_hops": 49.589,
+            "mean_io_time": 4219.9781,
+            "mean_ios": 49.589,
+            "mean_latency": 4398.3741,
+            "mean_pq_preprocess_time": 1.9932,
+            "p95_latency": 5390,
+            "p999_latency": 9685,
+            "qps": 2726.622802734375,
+            "recall": 92.31199645996094,
+            "search_l": 40
+          }
+        ],
+        "span_metrics": {
+          "spans": [
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 0.039850792,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.4677734375
+              },
+              "span_name": "search_disk_index-index_loaded"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 2.221373
+              },
+              "span_name": "search-with-L=20-bw=1"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 3.670025
+              },
+              "span_name": "search-with-L=40-bw=1"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 5.891766958,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.47479248046875
+              },
+              "span_name": "search_disk_index-search_completed"
+            }
+          ]
+        },
+        "uses_vector_filters": false
+      }
+    }
+  },
+  {
+    "input": {
+      "content": {
+        "search_phase": {
+          "beam_width": 1,
+          "distance": "squared_l2",
+          "groundtruth": "/Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin",
+          "num_nodes_to_cache": null,
+          "num_threads": 48,
+          "post_processor": null,
+          "queries": "/Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin",
+          "recall_at": 10,
+          "search_io_limit": null,
+          "search_list": [
+            20,
+            40
+          ],
+          "search_mode": {
+            "adaptive_l": null,
+            "is_flat_search": false
+          },
+          "vector_filters_file": null
+        },
+        "source": {
+          "data_type": "int8",
+          "disk-index-source": "Load",
+          "load_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        }
+      },
+      "type": "disk-index"
+    },
+    "results": {
+      "build": null,
+      "search": {
+        "beam_width": 1,
+        "distance": "squared_l2",
+        "is_flat_search": false,
+        "num_nodes_to_cache": null,
+        "num_threads": 48,
+        "recall_at": 10,
+        "search_results_per_l": [
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 1440.2149,
+            "mean_cpu_time": 237.1708,
+            "mean_hops": 29.812,
+            "mean_io_time": 5900.1714,
+            "mean_ios": 29.812,
+            "mean_latency": 6140.9134,
+            "mean_pq_preprocess_time": 3.5712,
+            "p95_latency": 8152,
+            "p999_latency": 15284,
+            "qps": 7780.76220703125,
+            "recall": 87.46900177001953,
+            "search_l": 20
+          },
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 2188.4006,
+            "mean_cpu_time": 407.551,
+            "mean_hops": 49.589,
+            "mean_io_time": 9987.5191,
+            "mean_ios": 49.589,
+            "mean_latency": 10398.7042,
+            "mean_pq_preprocess_time": 3.6341,
+            "p95_latency": 12964,
+            "p999_latency": 26059,
+            "qps": 4605.80224609375,
+            "recall": 92.31199645996094,
+            "search_l": 40
+          }
+        ],
+        "span_metrics": {
+          "spans": [
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 0.02849225,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.4748992919921875
+              },
+              "span_name": "search_disk_index-index_loaded"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 1.287785
+              },
+              "span_name": "search-with-L=20-bw=1"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 2.173686
+              },
+              "span_name": "search-with-L=40-bw=1"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 3.461936417,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.4832000732421875
+              },
+              "span_name": "search_disk_index-search_completed"
+            }
+          ]
+        },
+        "uses_vector_filters": false
+      }
+    }
+  },
+  {
+    "input": {
+      "content": {
+        "search_phase": {
+          "beam_width": 8,
+          "distance": "squared_l2",
+          "groundtruth": "/Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin",
+          "num_nodes_to_cache": null,
+          "num_threads": 12,
+          "post_processor": null,
+          "queries": "/Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin",
+          "recall_at": 10,
+          "search_io_limit": null,
+          "search_list": [
+            20,
+            40
+          ],
+          "search_mode": {
+            "adaptive_l": null,
+            "is_flat_search": false
+          },
+          "vector_filters_file": null
+        },
+        "source": {
+          "data_type": "int8",
+          "disk-index-source": "Load",
+          "load_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        }
+      },
+      "type": "disk-index"
+    },
+    "results": {
+      "build": null,
+      "search": {
+        "beam_width": 8,
+        "distance": "squared_l2",
+        "is_flat_search": false,
+        "num_nodes_to_cache": null,
+        "num_threads": 12,
+        "recall_at": 10,
+        "search_results_per_l": [
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 3011.2153,
+            "mean_cpu_time": 139.5369,
+            "mean_hops": 58.1593,
+            "mean_io_time": 5171.9106,
+            "mean_ios": 58.1593,
+            "mean_latency": 5313.1763,
+            "mean_pq_preprocess_time": 1.7288,
+            "p95_latency": 6760,
+            "p999_latency": 10479,
+            "qps": 2256.82763671875,
+            "recall": 90.63600158691406,
+            "search_l": 20
+          },
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 3660.7725,
+            "mean_cpu_time": 183.1889,
+            "mean_hops": 76.0806,
+            "mean_io_time": 6702.5158,
+            "mean_ios": 76.0806,
+            "mean_latency": 6887.4944,
+            "mean_pq_preprocess_time": 1.7897,
+            "p95_latency": 8360,
+            "p999_latency": 15314,
+            "qps": 1740.3525390625,
+            "recall": 93.802001953125,
+            "search_l": 40
+          }
+        ],
+        "span_metrics": {
+          "spans": [
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 0.029027125,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.4832305908203125
+              },
+              "span_name": "search_disk_index-index_loaded"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 4.433442
+              },
+              "span_name": "search-with-L=20-bw=8"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 5.748382
+              },
+              "span_name": "search-with-L=40-bw=8"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 10.182019917,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.4832305908203125
+              },
+              "span_name": "search_disk_index-search_completed"
+            }
+          ]
+        },
+        "uses_vector_filters": false
+      }
+    }
+  },
+  {
+    "input": {
+      "content": {
+        "search_phase": {
+          "beam_width": 8,
+          "distance": "squared_l2",
+          "groundtruth": "/Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin",
+          "num_nodes_to_cache": null,
+          "num_threads": 48,
+          "post_processor": null,
+          "queries": "/Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin",
+          "recall_at": 10,
+          "search_io_limit": null,
+          "search_list": [
+            20,
+            40
+          ],
+          "search_mode": {
+            "adaptive_l": null,
+            "is_flat_search": false
+          },
+          "vector_filters_file": null
+        },
+        "source": {
+          "data_type": "int8",
+          "disk-index-source": "Load",
+          "load_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        }
+      },
+      "type": "disk-index"
+    },
+    "results": {
+      "build": null,
+      "search": {
+        "beam_width": 8,
+        "distance": "squared_l2",
+        "is_flat_search": false,
+        "num_nodes_to_cache": null,
+        "num_threads": 48,
+        "recall_at": 10,
+        "search_results_per_l": [
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 3011.2153,
+            "mean_cpu_time": 193.2138,
+            "mean_hops": 58.1593,
+            "mean_io_time": 12071.4164,
+            "mean_ios": 58.1593,
+            "mean_latency": 12267.6686,
+            "mean_pq_preprocess_time": 3.0384,
+            "p95_latency": 15801,
+            "p999_latency": 24300,
+            "qps": 3904.40771484375,
+            "recall": 90.63600158691406,
+            "search_l": 20
+          },
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 3660.7725,
+            "mean_cpu_time": 246.6605,
+            "mean_hops": 76.0806,
+            "mean_io_time": 15594.2199,
+            "mean_ios": 76.0806,
+            "mean_latency": 15843.7822,
+            "mean_pq_preprocess_time": 2.9018,
+            "p95_latency": 19316,
+            "p999_latency": 36711,
+            "qps": 3022.819091796875,
+            "recall": 93.802001953125,
+            "search_l": 40
+          }
+        ],
+        "span_metrics": {
+          "spans": [
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 0.028610083,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.4832305908203125
+              },
+              "span_name": "search_disk_index-index_loaded"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 2.563738
+              },
+              "span_name": "search-with-L=20-bw=8"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 3.310635
+              },
+              "span_name": "search-with-L=40-bw=8"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 5.874802167,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.4858551025390625
+              },
+              "span_name": "search_disk_index-search_completed"
+            }
+          ]
+        },
+        "uses_vector_filters": false
+      }
+    }
+  },
+  {
+    "input": {
+      "content": {
+        "search_phase": {
+          "beam_width": 4,
+          "distance": "squared_l2",
+          "groundtruth": "/Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin",
+          "num_nodes_to_cache": 100000,
+          "num_threads": 12,
+          "post_processor": null,
+          "queries": "/Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin",
+          "recall_at": 10,
+          "search_io_limit": null,
+          "search_list": [
+            20,
+            40
+          ],
+          "search_mode": {
+            "adaptive_l": null,
+            "is_flat_search": false
+          },
+          "vector_filters_file": null
+        },
+        "source": {
+          "data_type": "int8",
+          "disk-index-source": "Load",
+          "load_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        }
+      },
+      "type": "disk-index"
+    },
+    "results": {
+      "build": null,
+      "search": {
+        "beam_width": 4,
+        "distance": "squared_l2",
+        "is_flat_search": false,
+        "num_nodes_to_cache": 100000,
+        "num_threads": 12,
+        "recall_at": 10,
+        "search_results_per_l": [
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 2098.1568,
+            "mean_cpu_time": 107.7561,
+            "mean_hops": 41.4989,
+            "mean_io_time": 2643.5787,
+            "mean_ios": 41.4989,
+            "mean_latency": 2752.9543,
+            "mean_pq_preprocess_time": 1.6195,
+            "p95_latency": 3815,
+            "p999_latency": 7759,
+            "qps": 4354.31591796875,
+            "recall": 88.947998046875,
+            "search_l": 20
+          },
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 2799.922,
+            "mean_cpu_time": 158.03,
+            "mean_hops": 60.462,
+            "mean_io_time": 4243.7052,
+            "mean_ios": 60.462,
+            "mean_latency": 4403.5042,
+            "mean_pq_preprocess_time": 1.769,
+            "p95_latency": 5503,
+            "p999_latency": 12817,
+            "qps": 2722.8759765625,
+            "recall": 92.9530029296875,
+            "search_l": 40
+          }
+        ],
+        "span_metrics": {
+          "spans": [
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 7.733610208,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.5579071044921875
+              },
+              "span_name": "search_disk_index-index_loaded"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 2.2990209999999998
+              },
+              "span_name": "search-with-L=20-bw=4"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 3.6749739999999997
+              },
+              "span_name": "search-with-L=40-bw=4"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 5.974142875,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.55889892578125
+              },
+              "span_name": "search_disk_index-search_completed"
+            }
+          ]
+        },
+        "uses_vector_filters": false
+      }
+    }
+  },
+  {
+    "input": {
+      "content": {
+        "search_phase": {
+          "beam_width": 4,
+          "distance": "squared_l2",
+          "groundtruth": "/Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin",
+          "num_nodes_to_cache": 100000,
+          "num_threads": 48,
+          "post_processor": null,
+          "queries": "/Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin",
+          "recall_at": 10,
+          "search_io_limit": null,
+          "search_list": [
+            20,
+            40
+          ],
+          "search_mode": {
+            "adaptive_l": null,
+            "is_flat_search": false
+          },
+          "vector_filters_file": null
+        },
+        "source": {
+          "data_type": "int8",
+          "disk-index-source": "Load",
+          "load_path": "/Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48"
+        }
+      },
+      "type": "disk-index"
+    },
+    "results": {
+      "build": null,
+      "search": {
+        "beam_width": 4,
+        "distance": "squared_l2",
+        "is_flat_search": false,
+        "num_nodes_to_cache": 100000,
+        "num_threads": 48,
+        "recall_at": 10,
+        "search_results_per_l": [
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 2098.1568,
+            "mean_cpu_time": 172.0122,
+            "mean_hops": 41.4989,
+            "mean_io_time": 6232.3378,
+            "mean_ios": 41.4989,
+            "mean_latency": 6407.5626,
+            "mean_pq_preprocess_time": 3.2126,
+            "p95_latency": 8850,
+            "p999_latency": 18162,
+            "qps": 7467.46484375,
+            "recall": 88.947998046875,
+            "search_l": 20
+          },
+          {
+            "cache_hit_percentage": 0.0,
+            "mean_comparisons": 2799.922,
+            "mean_cpu_time": 243.7793,
+            "mean_hops": 60.462,
+            "mean_io_time": 10022.3168,
+            "mean_ios": 60.462,
+            "mean_latency": 10269.2929,
+            "mean_pq_preprocess_time": 3.1968,
+            "p95_latency": 12851,
+            "p999_latency": 29617,
+            "qps": 4661.814453125,
+            "recall": 92.9530029296875,
+            "search_l": 40
+          }
+        ],
+        "span_metrics": {
+          "spans": [
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 7.576343208,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.559783935546875
+              },
+              "span_name": "search_disk_index-index_loaded"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 1.341747
+              },
+              "span_name": "search-with-L=20-bw=4"
+            },
+            {
+              "metrics": {
+                "duration_seconds": 2.147549
+              },
+              "span_name": "search-with-L=40-bw=4"
+            },
+            {
+              "metrics": {
+                "cpu_time": 0.0,
+                "duration_seconds": 3.489838584,
+                "elapsed_cycles": 0.0,
+                "peak_memory_usage": 0.5642242431640625
+              },
+              "span_name": "search_disk_index-search_completed"
+            }
+          ]
+        },
+        "uses_vector_filters": false
+      }
+    }
+  }
+]

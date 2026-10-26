@@ -1,0 +1,36 @@
+{
+  "search_directories": ["/Users/18abhinav07/Documents/exa/data/dann"],
+  "output_directory": "/Users/18abhinav07/Documents/exa/data/dann",
+  "jobs": [
+    {
+      "type": "graph-index-build",
+      "content": {
+        "source": {
+          "index-source": "Build",
+          "data_type": "int8",
+          "data": "base10m.i8bin",
+          "distance": "squared_l2",
+          "max_degree": 64,
+          "l_build": 100,
+          "alpha": 1.2,
+          "backedge_ratio": 1.0,
+          "num_threads": 12,
+          "start_point_strategy": "medoid",
+          "num_insert_attempts": 1,
+          "saturate_inserts": false,
+          "save_path": "mem10m_R64_L100"
+        },
+        "search_phase": {
+          "search-type": "topk",
+          "queries": "query10k.i8bin",
+          "groundtruth": "gt10m-10k.bin",
+          "reps": 2,
+          "num_threads": [1, 12],
+          "runs": [
+            { "search_n": 10, "search_l": [10, 15, 20, 30, 40, 60, 80, 120, 160, 240], "recall_k": 10 }
+          ]
+        }
+      }
+    }
+  ]
+}
