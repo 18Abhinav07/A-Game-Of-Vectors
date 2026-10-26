@@ -142,9 +142,14 @@ pub fn resident(path: &Path) -> Result<f64> {
 /// and 7× lower QPS).
 pub struct IoPool {
     tx: std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>,
+    threads: usize,
 }
 
 impl IoPool {
+    pub fn threads(&self) -> usize {
+        self.threads
+    }
+
     /// Runs every job on the pool and returns their results in order.
     pub fn run<T: Send + 'static>(&self, jobs: Vec<Box<dyn FnOnce() -> T + Send>>) -> Vec<T> {
         let n = jobs.len();
@@ -188,6 +193,6 @@ pub fn io_pool() -> &'static IoPool {
                 })
                 .expect("spawn io thread");
         }
-        IoPool { tx }
+        IoPool { tx, threads: n }
     })
 }

@@ -167,7 +167,7 @@ fn main() -> Result<()> {
             anyhow::ensure!(gn == qn, "ground truth has {gn} queries, query file {qn}");
             let nq = nq.min(qn);
             let qs: Vec<[i8; D]> = qs.chunks_exact(D).take(nq).map(|q| q.try_into().unwrap()).collect();
-            let mut index = Index::open(&a.index, &base_dir, cache_mb << 20)?;
+            let index = Index::open(&a.index, &base_dir, cache_mb << 20)?;
             let rows: u64 = index.postings.file_bytes();
             eprintln!("{} leaves, postings {:.2} GB, {nq} queries", index.model.k(), rows as f64 / 1e9);
             for cfg in configs.split(',') {

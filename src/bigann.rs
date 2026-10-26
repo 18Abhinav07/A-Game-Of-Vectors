@@ -360,12 +360,12 @@ pub fn pack(dir: &Path, k: usize, buckets: usize) -> Result<PackStats> {
     Ok(st)
 }
 
-/// The base chunks, read for the exact rerank.
+/// The base chunks, read for the exact rerank with positioned reads on the I/O pool. Not
+/// mapped: 1B rows (100 GB) do not fit the page cache, and a mapped read that misses is a
+/// serial page fault, where the pool keeps 64 reads in flight.
 pub struct Base {
     files: Vec<std::sync::Arc<File>>,
     paths: Vec<PathBuf>,
-    /// Mapped when warm: page-cache hits without a syscall.
-    maps: Option<Vec<Mapped<i8>>>,
 }
 
 impl Base {
@@ -378,23 +378,16 @@ impl Base {
             .collect();
         anyhow::ensure!(!paths.is_empty(), "no base.NN chunks in {}", dir.display());
         let files = paths.iter().map(|p| File::open(p).map(std::sync::Arc::new)).collect::<std::io::Result<_>>()?;
-        let maps = Some(paths.iter().map(|p| map_base(p)).collect::<Result<_>>()?);
-        Ok(Self { files, paths, maps })
+        Ok(Self { files, paths })
     }
 
     /// Rows of `ids`, in order.
     fn rows(&self, ids: &[u32]) -> Vec<i8> {
-        if let Some(maps) = &self.maps {
-            let mut out = Vec::with_capacity(ids.len() * D);
-            for &id in ids {
-                let (c, r) = (id as u64 / CHUNK_ROWS, id as u64 % CHUNK_ROWS);
-                out.extend_from_slice(&maps[c as usize].as_slice()[r as usize * D..][..D]);
-            }
-            return out;
-        }
-        const PER_JOB: usize = 2;
+        // One job per pool thread: enough reads in flight to keep the SSD busy when cold, few
+        // enough hand-offs that cached reads are not dominated by them.
+        let per_job = ids.len().div_ceil(crate::store::io_pool().threads()).max(1);
         let jobs = ids
-            .chunks(PER_JOB)
+            .chunks(per_job)
             .map(|chunk| {
                 let chunk = chunk.to_vec();
                 let files = self.files.clone();
@@ -411,9 +404,8 @@ impl Base {
         crate::store::io_pool().run(jobs).concat()
     }
 
-    /// Unmaps, drops the chunks from the page cache and bypasses it from now on.
-    fn go_cold(&mut self) -> Result<()> {
-        self.maps = None;
+    /// Drops the chunks from the page cache and bypasses it from now on.
+    fn go_cold(&self) -> Result<()> {
         for (f, p) in self.files.iter().zip(&self.paths) {
             crate::store::no_cache(f);
             crate::store::evict(p)?;
@@ -456,7 +448,7 @@ impl Index {
 
     /// Every later read comes from the device: pages already cached are dropped and new reads
     /// bypass the cache.
-    pub fn go_cold(&mut self, dir: &Path) -> Result<()> {
+    pub fn go_cold(&self, dir: &Path) -> Result<()> {
         self.postings.bypass_cache();
         self.postings.clear_cache();
         crate::store::evict(&dir.join("postings.bin"))?;
