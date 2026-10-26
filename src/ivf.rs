@@ -654,7 +654,7 @@ impl Index {
         // width is infinite and pruning keeps everything.
         let mut cand: Vec<(f32, u32, f32)> = match &self.rabitq {
             Some((rot, factors)) => {
-                let rq = rabitq::Query::new(rot, q256);
+                let rq: rabitq::Query = rabitq::Query::new(rot, q256);
                 let mut cand = TopK::new(p.cand);
                 let (scores, meta) = (&mut s.scores, &mut s.meta);
                 meta.clear();
@@ -698,7 +698,7 @@ impl Index {
                 cand.into_sorted().into_iter().map(|(est, k)| (est, meta[k as usize].0, meta[k as usize].1)).collect()
             }
             None => {
-                let lut = Lut::new(q256);
+                let lut: Lut = Lut::new(q256);
                 let mut cand = TopK::new(p.cand);
                 for &(_, c) in probe {
                     let (b0, b1) = (self.block_off[c as usize] as usize, self.block_off[c as usize + 1] as usize);

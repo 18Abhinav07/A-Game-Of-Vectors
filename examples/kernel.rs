@@ -6,7 +6,7 @@ use std::time::Instant;
 
 fn main() {
     let q: Vec<f32> = (0..sieve::PDIM).map(|i| ((i * 7919) % 101) as f32 / 50.0 - 1.0).collect();
-    let lut = Lut::new(&q);
+    let lut: Lut = Lut::new(&q);
     for kb in [32usize, 1 << 10, 8 << 10, 1 << 20] {
         let nblocks = kb * 1024 / BLOCK_BYTES;
         let blocks: Vec<u8> = (0..nblocks * BLOCK_BYTES).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
