@@ -523,16 +523,25 @@ data (the first 10M rows of SPACEV), the same 10,000 queries and the same ground
     reaches ~228k.
   - At the same 12 threads, sieve is ahead on both: 0.930 at 3,313 QPS against DiskANN's
     0.923–0.930 at 2,265–2,727 (beam 1 and 4).
+  - **The gap closes as recall rises.** Tuning sieve's rerank count (50, 70, 100) the way
+    DiskANN's L was swept: at 0.945 sieve does 3,016 QPS against 3,355; at 0.955, 2,528
+    against 2,629; at 0.97, 1,631 against 1,821. DiskANN's dependent chain grows with L
+    (69–129 reads, 14–26 ms at 48 threads), while sieve's batch stays at 50–100 reads
+    (1.9–2.8 ms). Above 0.94 the two are level on throughput and sieve is 7–10× faster per
+    query.
+  - With its whole disk index cached (~4.2 GB of RAM), DiskANN does 21k QPS at 0.923 and
+    8.2k at 0.968, ~8× sieve fully in RAM: give a graph the RAM and the in-RAM result returns.
 - **Build**: sieve 7 s, DiskANN 169 s (in RAM) and 211 s (disk), on 12 threads.
 - **What it means.** Flat IVF is the wrong structure when the index fits in RAM. Its case is
   the SSD (latency, cheap builds, updates), and there it is level with the best graph index
-  rather than ahead. The way to close the in-RAM gap is SPANN's: many more, smaller posting
+  rather than ahead (behind at low recall, level above 0.94, with far lower latency). The way to close the in-RAM gap is SPANN's: many more, smaller posting
   lists, routed by a graph over their centroids.
 - **Caveats.** DiskANN warns that its AArch64 kernels are unoptimised; that matters for the
   in-RAM result (DiskANN's lead would grow), not the I/O-bound SSD one. macOS has no io_uring,
   so a DiskANN beam's reads are issued one after another; beam width 1 was its best setting
-  here anyway. 100M was not run: its disk index (~37 GB plus build scratch) does not fit next
-  to the 1B data on this disk.
+  here anyway. 100M was not run. DiskANN builds it in ~6 overlapping shards (each vector in 2),
+  and the merge needs the base, shard data, shard graphs and merged graph on disk at once:
+  ~96–106 GB at peak, with a 52 GB final index. This disk has 59 GB free next to the 1B data.
 
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.

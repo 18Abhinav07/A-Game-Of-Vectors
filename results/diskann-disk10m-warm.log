@@ -1,0 +1,96 @@
+######################
+# Running Job 1 of 2 #
+######################
+
+Disk Index Load
+         Data Type: int8
+         Load Path: /Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48
+
+Disk Index Search Phase
+           Queries: /Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin
+       Groundtruth: /Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin
+        Search List:20,40,80,120
+        Beam Width: 1
+           Recall@: 10
+           Threads: 12
+       Search Mode: graph
+          Distance: squared_l2
+Vector Filters File: none
+Num Nodes to Cache: none (defaults to 0)
+   Search IO Limit: none (defaults to `usize::MAX`)
+    Post Processor: none
+
+Search Stats
+Threads,          : 12
+Beam width,       : 1
+Recall at,        : 10
+Flat search,      : false
+Distance,         : squared_l2
+Vector filters,   : false
+Nodes to cache,   : None
+=======================================================================================================================================================
+ L KNN      QPS  Mean Latency   95% Latency  99.9 Latency    IOs    IO (us)   CPU (us)   PQ Preprocess (us)  Mean Comps  Mean Hops  Cache Hit %  Recall
+=======================================================================================================================================================
+20  10  34903.7       341.7us         566us        2174us   29.8    220.1us    119.2us                2.3us      1440.2       29.8         0.0%  87.469
+40  10  21031.8       568.6us         964us        4415us   49.6    372.3us    193.7us                2.6us      2188.4       49.6         0.0%  92.312
+80  10  11319.5      1058.5us        1632us       10633us   89.0    712.3us    343.6us                2.6us      3590.9       89.0         0.0%  95.435
+120  10   8196.6      1459.5us        2788us       10571us  128.6    990.5us    466.3us                2.7us      4940.8      128.6         0.0%  96.822
+
+
+
+######################
+# Running Job 2 of 2 #
+######################
+
+Disk Index Load
+         Data Type: int8
+         Load Path: /Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48
+
+Disk Index Search Phase
+           Queries: /Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin
+       Groundtruth: /Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin
+        Search List:20,40,80,120
+        Beam Width: 4
+           Recall@: 10
+           Threads: 12
+       Search Mode: graph
+          Distance: squared_l2
+Vector Filters File: none
+Num Nodes to Cache: none (defaults to 0)
+   Search IO Limit: none (defaults to `usize::MAX`)
+    Post Processor: none
+
+Search Stats
+Threads,          : 12
+Beam width,       : 4
+Recall at,        : 10
+Flat search,      : false
+Distance,         : squared_l2
+Vector filters,   : false
+Nodes to cache,   : None
+=======================================================================================================================================================
+ L KNN      QPS  Mean Latency   95% Latency  99.9 Latency    IOs    IO (us)   CPU (us)   PQ Preprocess (us)  Mean Comps  Mean Hops  Cache Hit %  Recall
+=======================================================================================================================================================
+20  10  24720.7       483.9us         813us        3618us   41.5    351.0us    130.4us                2.5us      2098.2       41.5         0.0%  88.948
+40  10  16682.7       717.9us        1122us        4594us   60.5    530.1us    185.2us                2.5us      2799.9       60.5         0.0%  92.953
+80  10  10253.1      1168.3us        1814us        7788us   99.1    869.4us    296.3us                2.5us      4155.7       99.1         0.0%  95.856
+120  10   7258.4      1651.2us        2602us        8750us  138.1   1216.9us    431.4us                2.9us      5478.0      138.1         0.0%  97.068
+
+        6.33 real        21.35 user        45.38 sys
+           512868352  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               31596  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+               53954  involuntary context switches
+        205499709160  instructions retired
+        235765150836  cycles elapsed
+           510001944  peak memory footprint

@@ -136,8 +136,8 @@ big-ann-benchmarks SPACEV-1B set instead, on the same 24 GB laptop with no cloud
 - **Against DiskANN on this laptop** (D22, 10M SPACEV, same queries and ground truth): in RAM,
   DiskANN is 45–50× faster at equal recall (0.903 at 146k QPS against sieve's 0.907 at 3.1k).
   A flat IVF scores 120× more candidates than a graph walk. On SSD with ~0.5 GB of RAM each it
-  is close: sieve has ~3× lower latency (1.6 ms against 4.4–5.2 ms at 0.93, 12 threads) and
-  DiskANN ~1.3× more peak QPS with 48 threads (4.6k against 3.6k).
+  is close, and closer as recall rises. DiskANN's peak-QPS lead is 1.3× at 0.93 and ~1.1× at
+  0.945–0.97, while sieve answers in 1.6–2.8 ms against DiskANN's 10–26 ms at those points.
 
 ## Production gaps
 What a real service would still need, roughly in order:
