@@ -312,7 +312,7 @@ The built index stays immutable; updates sit beside it and the query path reads 
   live truth now reaches further down the exact ranking, into clusters not always probed.
   After reinsertion, and again after a restart from the log alone, and again after compaction,
   0.9192 / 0.9191 / 0.9120: the delta path loses nothing. SSD mode gives 0.9120 at every step
-  too. Inserts run at 100k rows/s on 12 threads, fsync per 10k rows. The log for 1.84M rows is
+  too. Inserts run at 70–100k rows/s on 12 threads (69k in the AC re-run), fsync per 10k rows. The log for 1.84M rows is
   1.44 GB and replays in 12 s; compaction takes 8 s plus the posting-list pack.
 - **Cost of an uncompacted delta**: with 10% of the corpus in delta lists and 10% dead slots in
   the base, scanned slots rise 10% (622,762 → 685,851 per query) and p50 rises about 25% (1.67 →
@@ -475,6 +475,23 @@ attacking whatever the device was spending its time on:
   throughput. The next gains are fewer bytes per probe (f16 factors save 4 of 48 B; ids implied
   by a base reordered into posting order save 4 more) or more RAM for the hot set, which pays
   back at 75%→87% coverage between 12 and 16 GiB.
+
+### D21. Query-aware probing at 1B
+D12 showed on M1 that a per-query margin on the centroid scores beats a fixed nprobe. At 1B it
+is an L2 rule: of the `nprobe` nearest leaves, keep those with ‖q − c‖² ≤ (1 + m)·‖q − c₁‖²
+(config `nprobe:cand:refine:mM`). The hot set is learned with the same rule.
+- **The useful margins are large.** In 100 dimensions with 131,072 leaves the nearest leaf
+  distances bunch up: m 0.04 keeps 1.6 leaves and gets R@10 0.597; m 0.22 keeps 14.5 (0.821).
+  The range that matters is m 0.3–1.0 (27–147 leaves).
+- **Result, 2-bit, 12 GiB pinned, cold, 10,000 queries.** At matched recall it gives 12–14% more
+  QPS, and lower p50, than a fixed nprobe:
+  0.906: fixed 40 probes 372 QPS, m 0.4 (43.8 probes on average) 420 QPS;
+  0.911–0.914: fixed 48 345 QPS, 96:m0.45 413 QPS;
+  0.925–0.927: fixed 64 275 QPS, 96:m0.6 314 QPS;
+  0.95–0.96: fixed 128:200:2000 0.951 at 137 QPS, 192:200:2000:m1.0 0.960 at 127 QPS.
+- **The cost is the tail.** Hard queries probe up to the cap, so p99 rises (fixed 40: 7.2 ms;
+  m 0.4 capped at 128: 11.2 ms; capped at 96: 10.3 ms). The cap is the tail knob; a scan budget
+  (D15) would bound it more tightly.
 
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
