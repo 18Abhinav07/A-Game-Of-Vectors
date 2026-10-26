@@ -276,18 +276,18 @@ footer { position: relative; z-index: 1; background: var(--paper); padding: 120p
 <section id="diskann" style="padding-top:0"><div class="wrap">
   <div data-reveal>
     <div class="label">Head-to-head from SSD</div>
-    <h2>Level with Microsoft’s DiskANN, at a fraction of the latency.</h2>
+    <h2>Head to head with Microsoft’s DiskANN, and ahead on the same 12 threads.</h2>
     <p class="lead">DiskANN is Microsoft’s index for data larger than memory, and the standard to beat. Both ran on the same laptop over the same 10M SPACEV vectors and queries, from a cold page cache, in about 0.5 GB of RAM each. <strong>Above recall 0.94, sieve answers in under 3 ms.</strong> It fetches its candidates from SSD in one parallel batch, while DiskANN waits on a chain of dependent reads.</p>
   </div>
   <div class="chart feature" data-reveal><h3>Mean latency per query</h3><p>Against recall@10, from SSD. Lower is better.</p><div class="plot" id="ssd-lat"></div><div class="legend" id="leg2"></div></div>
   <div class="stats" data-reveal>
-    <div><b>3–4×</b><span>lower latency than DiskANN on the same 12 threads, from recall 0.94 to 0.97.</span></div>
-    <div><b>7–10×</b><span>lower than DiskANN at 48 threads, its highest-throughput setting, over the same range.</span></div>
-    <div><b>1.6×</b><span>the throughput of DiskANN at recall 0.97, both on 12 threads.</span></div>
+    <div><b>3–4×</b><span>faster per query than DiskANN on the same 12 threads, from recall 0.94 to 0.97.</span></div>
+    <div><b>1.6×</b><span>the queries per second of DiskANN at recall 0.97, on the same 12 threads.</span></div>
+    <div><b>¼</b><span>of the threads to keep pace with DiskANN on 48 from recall 0.955, answering each query 7–10× faster.</span></div>
   </div>
   <div class="charts">
     <div class="chart" data-reveal><h3>Throughput</h3><p>Queries per second against recall@10. Higher is better.</p><div class="plot" id="ssd-qps"></div><div class="legend" id="leg1"></div></div>
-    <div class="chart side" data-reveal><h3>Where the lines cross</h3><p>DiskANN at 48 threads leads at low recall, where its graph walk is short. As recall rises its reads stack up one after another, and from 0.955 the two systems are level on throughput while sieve stays 7–10× quicker per query. Against DiskANN on equal threads, sieve is ahead from recall 0.91 up.</p></div>
+    <div class="chart side" data-reveal><h3>The gap widens with recall</h3><p>On the same 12 threads, sieve serves more queries per second than DiskANN from recall 0.91 up, and its lead grows as recall rises, to 1.6× at 0.97. Each extra point of recall costs DiskANN another round of dependent SSD reads; sieve still reads its candidates in one batch. Give DiskANN four times the threads and sieve still draws level from 0.955.</p></div>
   </div>
   <details><summary>Show the data</summary><div class="tbl" id="tbl-ssd"></div></details>
 </div></section>
@@ -332,9 +332,9 @@ footer { position: relative; z-index: 1; background: var(--paper); padding: 120p
 <section class="loses"><div class="wrap">
   <div class="charts" style="margin-top:0">
     <div data-reveal>
-      <div class="label">What it costs</div>
-      <h2>Seconds to build, half a gigabyte to serve.</h2>
-      <p class="lead">sieve builds the 10M index in 7 seconds, where DiskANN takes three minutes. The trade-off shows when every vector already fits in RAM: there DiskANN’s graph checks about 1,840 vectors per query against sieve’s 222,000 compressed codes, and it is faster. sieve is built for the case where the data doesn’t fit.</p>
+      <div class="label">Build and memory</div>
+      <h2>Built in seconds, served from half a gigabyte.</h2>
+      <p class="lead">sieve builds the 10M index in 7 seconds, 24–30× faster than DiskANN, and needs a quarter of its memory when the index is held in RAM. It is designed for data that outgrows memory, the case the head-to-head above measures.</p>
     </div>
     <div class="tbl cost" data-reveal style="margin-top:0;align-self:end"><table>
       <thead><tr><th></th><th>sieve</th><th>DiskANN</th></tr></thead>
@@ -342,11 +342,11 @@ footer { position: relative; z-index: 1; background: var(--paper); padding: 120p
         <tr><td>Index build, 10M, 12 threads</td><td>7 s</td><td>169–211 s</td></tr>
         <tr><td>RAM, searching from SSD</td><td>0.5 GB</td><td>0.5 GB</td></tr>
         <tr><td>RAM, searching in memory</td><td>1.8 GB</td><td>7.2 GB</td></tr>
-        <tr><td>Scored per query</td><td>~222k codes</td><td>~1,840 vectors</td></tr>
       </tbody>
     </table></div>
   </div>
   <details><summary>Show the in-memory results</summary>
+    <p class="note" style="max-width:64ch;margin-top:24px;color:var(--ink-2)">When every vector already sits in RAM, DiskANN’s graph scores about 1,840 vectors per query against sieve’s ~222,000 compressed codes, and it is the faster choice there. sieve’s advantage starts where the data no longer fits.</p>
     <div class="chart" style="max-width:640px;margin-top:24px"><p>Queries per second against recall@10, log scale, 12 threads each, everything in RAM.</p><div class="plot" id="ram-qps"></div><div class="legend" id="leg3"></div></div>
     <div class="tbl" id="tbl-ram"></div>
   </details>
