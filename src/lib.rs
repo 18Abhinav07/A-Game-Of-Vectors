@@ -1,6 +1,7 @@
 //! sieve: IVF + 1-bit Matryoshka codes + asymmetric LUT scoring + int8 rerank.
 //! See DESIGN.md for the decisions behind each module.
 
+pub mod bigann;
 pub mod blas;
 pub mod bm25;
 pub mod data;
