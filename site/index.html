@@ -499,14 +499,16 @@ function Field(cv, cfg) {
   const F = Field(cv, { seed: 11, cell: (w, h) => Math.max(110, Math.min(170, Math.sqrt(w * h / 60))), per: 70, probes: 7, dot: 1.25, parallax: !reduce });
   const spots = [[0.56, 0.36], [0.34, 0.3], [0.7, 0.24], [0.46, 0.46]];
   const CYCLE = 7.2, FULL = { q: 1, route: 1, scan: 1, rer: 1, ret: 1, fade: 1 };
-  let n = 0, start = performance.now(), visible = true;
+  let n = 0, start = null, visible = true;
   F.resize(); F.query(...spots[0]);
   addEventListener("pointermove", e => { F.mouse.tx = e.clientX / innerWidth - 0.5; F.mouse.ty = e.clientY / innerHeight - 0.5; }, { passive: true });
   function state(tc) {
     return { q: k(tc, 0.1, 0.7), route: k(tc, 0.7, 1.6), scan: k(tc, 1.6, 2.9), rer: k(tc, 2.9, 3.7), ret: k(tc, 3.7, 4.6), fade: 1 - k(tc, 6.0, 7.0) };
   }
   function tick(now) {
-    const t = (now - start) / 1000, cyc = Math.floor(t / CYCLE), tc = t - cyc * CYCLE;
+    // rAF timestamps can predate a performance.now() taken in script, so the clock starts on the first frame
+    if (start === null) start = now;
+    const t = Math.max(0, now - start) / 1000, cyc = Math.floor(t / CYCLE), tc = t - cyc * CYCLE;
     if (cyc !== n) { n = cyc; F.query(...spots[n % spots.length]); }
     const s = state(tc);
     F.draw(s, t);
