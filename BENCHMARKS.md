@@ -135,7 +135,47 @@ These rows predate two later changes: routing on AMX (sgemm, 65 → 28 µs) and 
 prefetch. The 16-probe p99 includes page faults on rerank rows. A re-run after the M2 ingest
 (`results/m1-lowpower.jsonl`) turned out to be on battery in Low Power Mode: the scan stage at
 64 probes took 1.64 ms against 1.00 ms here, and 12-thread QPS fell 3×. So those numbers are kept
-only as a same-session reference for the FAISS comparison below, and an on-AC re-run is pending.
+only as a same-session reference for the FAISS comparison below. The on-AC re-run is the next
+section.
+
+### On AC power (`scripts/ac-bench.sh`, `results/m1*-ac.jsonl`)
+The re-run of every M1 latency marked "Low Power Mode" above and below, on AC power with Low
+Power Mode off and the machine otherwise idle. Recall is identical to the earlier runs in
+every row; only times change. Latency is single-thread over 2,677 queries, QPS is 12 threads.
+
+| config | | p50 | p99 | scan | fetch | rerank | QPS | peak RSS |
+|---|---|---|---|---|---|---|---|---|
+| 16:500:full | warm | 0.37 ms | 1.61 ms | 0.32 | | 0.19 | 23,687 | 8.1 GB |
+| 32:500:full | warm | 0.62 ms | 0.90 ms | 0.58 | | 0.04 | 12,527 | 8.1 GB |
+| 64:500:full | warm | 1.16 ms | 1.62 ms | 1.12 | | 0.04 | 5,962 | 8.0 GB |
+| 32:1000:tiered200 | warm | 1.03 ms | 1.37 ms | 0.65 | | 0.37 | 3,677 | 2.8 GB |
+| 64:500:tiered200 | warm | 1.44 ms | 1.90 ms | 1.13 | | 0.31 | 3,273 | 2.8 GB |
+| 256:500:tiered200:p0.12 | warm | 0.69 ms | 5.47 ms | 0.91 | | 0.31 | 3,660 | 2.8 GB |
+| 64:500:tiered200 | cold | 4.06 ms | 5.52 ms | 1.10 | | 2.98 | 471 | 2.8 GB |
+| 256:500:tiered200:p0.12 | cold | 3.48 ms | 8.22 ms | 0.88 | | 2.98 | 473 | 2.8 GB |
+| 64:500:ssd300, SSD mode | cold | 12.2 ms | 25.8 ms | 8.49 | 7.08 | 4.06 | 87 | 155 MB |
+| same, 512 MB cluster cache | cold | 7.52 ms | 19.4 ms | 3.73 | 2.23 | 4.05 | 137 | 1.19 GB |
+| 256:500:ssd300:p0.12, SSD mode | cold | 6.73 ms | 41.1 ms | 6.42 | 5.34 | 4.10 | 94 | 156 MB |
+| same, 512 MB cluster cache | cold | 5.32 ms | 19.1 ms | 2.57 | 1.43 | 3.88 | 177 | 1.18 GB |
+| 64:500:ssd300:s1000k, SSD mode | cold | 12.1 ms | 17.0 ms | 8.34 | 6.92 | 3.97 | 78 | 159 MB |
+
+Full rerank cold (the 15 GB of int8 rows evicted) is 15–16 ms p50, almost all of it faulting
+rows back in; the tiered rerank reads 200 rows instead of 500 and stays at 4 ms.
+
+Sharding (D16), 64:500:tiered200, warm, all processes on this machine over loopback:
+
+| | p50 | p99 | QPS | shard wait per query |
+|---|---|---|---|---|
+| single process | 1.45 ms | 1.93 ms | 3,344 | |
+| 4 shards, one-shot | 2.53 ms | 5.24 ms | 599 | 2.57 ms |
+| 4 shards, two-phase | **0.91 ms** | **1.74 ms** | 2,869 | 0.93 ms |
+
+Live updates (D17), 64:500:full p50: baseline 1.28 ms, 10% deleted 1.27, reinserted 1.84,
+replayed from the log 1.43, compacted 1.28. Delete 1.84M rows 0.76 s; insert 26.5 s (69k rows/s,
+10k-row batches with fsync); replay 8.4 s; compaction 3.6 s.
+
+Filters (D18), auto plan p50 at 100% / 50% / 10% / 1% / 0.1% allowed: 1.15 / 1.19 / 4.19 / 2.24 /
+0.22 ms. BM25 (exhaustive TAAT): 16.8 ms p50, 80 ms p99.
 
 ### SSD mode (DESIGN.md D13): posting lists on disk
 `index --pack` turns the RaBitQ index into 1.63 GB of 4 KiB-aligned cluster records. RAM holds
@@ -521,6 +561,24 @@ Offline, 1B, 1,000 held-out queries, nprobe 64, R@10 after reranking the top-k b
 48.33 GB of postings. 2-bit stage means at 48:100:1000 (ms): route 0.35, scan 1.53, posting
 I/O 1.41, rerank 0.81. 47.5k–50k leaves fit in 12 GiB depending on nprobe.
 
+Query-aware probing (DESIGN.md D21), same setup; `mM` keeps leaves with ‖q − c‖² within
+(1 + M) of the nearest, up to the nprobe cap:
+
+| config | probes | R@10 | p50 | p99 | QPS | MB/q |
+|---|---|---|---|---|---|---|
+| 16:100:1000 | 16 | 0.859 | 2.32 ms | 4.37 ms | 703 | 3.2 |
+| 24:100:1000 | 24 | 0.882 | 2.69 ms | 5.09 ms | 552 | 4.6 |
+| 128:100:1000:m0.22 | 14.5 | 0.821 | 1.92 ms | 6.93 ms | 845 | 2.4 |
+| 128:100:1000:m0.3 | 27.1 | 0.871 | 2.16 ms | 9.11 ms | 599 | 4.2 |
+| 128:100:1000:m0.4 | 43.8 | 0.906 | 2.66 ms | 11.2 ms | 420 | 6.8 |
+| 96:100:1000:m0.45 | 42.9 | 0.911 | 2.96 ms | 10.3 ms | 413 | 6.9 |
+| 128:100:1000:m0.55 | 65.4 | 0.930 | 3.83 ms | 12.8 ms | 295 | 10.5 |
+| 96:100:1000:m0.6 | 57.4 | 0.927 | 3.78 ms | 11.2 ms | 314 | 9.6 |
+| 128:100:1000:m0.75 | 86.6 | 0.941 | 5.29 ms | 15.2 ms | 222 | 14.5 |
+| 192:200:2000:m1.0 | 147.1 | 0.960 | 8.72 ms | 21.6 ms | 127 | 24.8 |
+
+At matched recall that is 12–14% more QPS than a fixed nprobe, at a higher p99.
+
 Against the published NeurIPS'21 big-ann results on msspacev-1B (Simhadri et al., PMLR 176,
 2022; [track README](https://github.com/harsha-simhadri/big-ann-benchmarks/blob/main/neurips21/t1_t2/README.md)):
 
@@ -531,8 +589,9 @@ Against the published NeurIPS'21 big-ann results on msspacev-1B (Simhadri et al.
 | T2 BBANN | same | 0.760 | 1,500 (bar) |
 | T1 FAISS baseline (in RAM) | 32 vCPU, 64 GB | 0.729 | 10,000 (bar) |
 | T1 best (kst_ann_t1) | same | 0.765 | 10,000 (bar) |
-| sieve 2-bit, 40:100:1000 | M4 Pro laptop, 24 GB RAM (12 GiB pinned) | 0.906 | 372 |
-| sieve 2-bit, 128:200:2000 | same | 0.951 | 137 |
+| sieve 2-bit, 128:100:1000:m0.4 | M4 Pro laptop, 24 GB RAM (12 GiB pinned) | 0.906 | 420 |
+| sieve 2-bit, 96:100:1000:m0.6 | same | 0.927 | 314 |
+| sieve 2-bit, 192:200:2000:m1.0 | same | 0.960 | 127 |
 
 What this says:
 - **2.5× the QPS of D19 at equal or better recall, fully cold apart from the pinned set.** The

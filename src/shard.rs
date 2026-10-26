@@ -182,11 +182,10 @@ fn handle(conn: TcpStream, index: &Index, corpus: &Corpus, owner: &[u16], me: u1
         let pairs = words_to_pairs(&buf[hlen + DIM * 4..]);
         crate::quant::prefix(&q768, &mut q256);
         let mut t = Timing::default();
-        if h.phase != 2 {
-            if let Some(&(_, c)) = pairs.iter().find(|&&(_, c)| owner.get(c as usize) != Some(&me)) {
+        if h.phase != 2
+            && let Some(&(_, c)) = pairs.iter().find(|&&(_, c)| owner.get(c as usize) != Some(&me)) {
                 bail!("cluster {c} is not owned by shard {me}");
             }
-        }
         let words = match h.phase {
             0 => pairs_to_words(&index.search_probes(corpus, &q768, &q256, &pairs, &p, &mut s, &mut t)),
             1 => triples_to_words(&index.candidates(&q256, &pairs, &p, &View::default(), &mut s, &mut t)),

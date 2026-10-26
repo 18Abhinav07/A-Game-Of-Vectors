@@ -533,11 +533,11 @@ impl Base {
 }
 
 /// Leaves to pin under `budget` bytes, hottest per byte first: how often `qs` probe a leaf at
-/// `nprobe`, divided by its record size, is the read traffic a byte of RAM saves.
-pub fn hot_leaves(index: &Index, qs: &[[i8; D]], nprobe: usize, budget: u64) -> Vec<u32> {
+/// `nprobe` (cut by `margin`), divided by its record size, is the read traffic a byte of RAM saves.
+pub fn hot_leaves(index: &Index, qs: &[[i8; D]], nprobe: usize, margin: f32, budget: u64) -> Vec<u32> {
     use rayon::prelude::*;
     let k = index.model.k();
-    let p = Params { nprobe, cand: 1, k: 10, refine: 0 };
+    let p = Params { nprobe, cand: 1, k: 10, refine: 0, margin };
     let hits = qs
         .par_iter()
         .fold(
@@ -616,6 +616,9 @@ pub struct Params {
     /// Multi-bit index only: the 1-bit shortlist re-estimated from all planes before the best
     /// `cand` are reranked. 0 ranks by the 1-bit estimate alone.
     pub refine: usize,
+    /// Query-aware probing: of the `nprobe` nearest leaves, keep those with ‖q − c‖² within
+    /// (1 + margin) of the nearest leaf's. Easy queries probe fewer leaves. 0 is off.
+    pub margin: f32,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -625,6 +628,7 @@ pub struct Timing {
     pub io_wait: u64,
     pub rerank: u64,
     pub scanned: u64,
+    pub probes: u64,
 }
 
 impl Index {
@@ -661,8 +665,16 @@ impl Index {
         gemm_abt(&qf, &m.leaves, 1, m.k(), D, &mut dots);
         let mut top = TopK::new(p.nprobe);
         dots.iter().zip(&m.leaf_norm).enumerate().for_each(|(c, (&d, &n))| top.push(2.0 * d - n, c as u32));
+        let mut probe = top.into_sorted();
+        if p.margin > 0.0 && !probe.is_empty() {
+            // route score = ‖q‖² − ‖q − c‖².
+            let qq: f32 = qf.iter().map(|x| x * x).sum();
+            let lim = (qq - probe[0].0) * (1.0 + p.margin);
+            probe.retain(|&(s, _)| qq - s <= lim);
+        }
+        t.probes += probe.len() as u64;
         t.route += t0.elapsed().as_nanos() as u64;
-        (top.into_sorted().into_iter().map(|x| x.1).collect(), dots)
+        (probe.into_iter().map(|x| x.1).collect(), dots)
     }
 
     /// The `p.cand` best slots of the probed leaves by code estimate, best first, as

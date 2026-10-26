@@ -26,7 +26,8 @@ fn main() {
         hits += (v & 1) as usize;
     }
     println!("mincore: {:.3} us/call, {hits} resident", t.elapsed().as_secs_f64() * 1e6 / n as f64);
-    for th in [12usize] {
+    {
+        let th = 12usize;
         let t = Instant::now();
         std::thread::scope(|s| for c in ids.chunks(ids.len() / th) { let m = &m; s.spawn(move || { let mut v = 0u8; for &o in c { let pg = (o as usize) & !16383; unsafe { mincore(m.as_ptr().add(pg), 16384, &mut v) }; } }); });
         println!("mincore {th} threads: {:.3} us aggregate", t.elapsed().as_secs_f64() * 1e6 / n as f64);

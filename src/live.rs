@@ -233,7 +233,7 @@ impl<'a> Live<'a> {
                 stats.inserts += 1;
             } else {
                 self.apply_insert(&ext, &rows, &norms);
-                (ext.clear(), rows.clear(), norms.clear());
+                ext.clear(); rows.clear(); norms.clear();
                 self.apply_delete(&[le32(&r[1..])]);
                 stats.deletes += 1;
             }
@@ -443,7 +443,7 @@ impl<'a> Live<'a> {
             slots += live.len() as u64;
         }
         block_off.push(nblocks);
-        (w_blocks.finish()?, w_factors.finish()?, w_ids.finish()?);
+        w_blocks.finish()?; w_factors.finish()?; w_ids.finish()?;
         write_vec(&out.join("block_off.u64"), &block_off)?;
         for f in ["centroids.f32", "rotation.f32", "tier2.sigma", "tier2.bin", "tier2.norm"] {
             let (from, to) = (src.join(f), out.join(f));

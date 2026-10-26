@@ -72,7 +72,7 @@ pub fn float_score(q: &[f32], code: &[u8]) -> f32 {
 /// Packs up to 32 raw codes into one transposed block of `out.len() / 16` groups; missing docs
 /// are zero codes.
 pub fn pack_block(codes: &[&[u8]], out: &mut [u8]) {
-    debug_assert!(codes.len() <= BLOCK && out.len() % 16 == 0);
+    debug_assert!(codes.len() <= BLOCK && out.len().is_multiple_of(16));
     let get = |k: usize, g: usize| codes.get(k).map_or(0, |c| nibble(c, g));
     for g in 0..out.len() / 16 {
         for k in 0..16 {
@@ -83,7 +83,7 @@ pub fn pack_block(codes: &[&[u8]], out: &mut [u8]) {
 
 /// The raw code of slot `k` in a packed block: the inverse of `pack_block`.
 pub fn unpack_slot(block: &[u8], k: usize, code: &mut [u8]) {
-    debug_assert!(k < BLOCK && block.len() % 16 == 0);
+    debug_assert!(k < BLOCK && block.len().is_multiple_of(16));
     code.fill(0);
     for g in 0..block.len() / 16 {
         let b = block[g * 16 + (k & 15)];

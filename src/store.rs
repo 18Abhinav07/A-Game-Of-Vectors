@@ -37,7 +37,7 @@ pub fn write_vec<T: Pod>(path: &Path, xs: &[T]) -> Result<()> {
 pub fn read_vec<T: Pod>(path: &Path) -> Result<Vec<T>> {
     let mut f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let len = f.metadata()?.len() as usize;
-    anyhow::ensure!(len % size_of::<T>() == 0, "{} is not a whole number of items", path.display());
+    anyhow::ensure!(len.is_multiple_of(size_of::<T>()), "{} is not a whole number of items", path.display());
     let mut v = vec![T::zeroed(); len / size_of::<T>()];
     f.read_exact(bytemuck::cast_slice_mut(&mut v))?;
     Ok(v)

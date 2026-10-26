@@ -1,0 +1,99 @@
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.10s
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+shard 1/4: 1024 clusters, 9206016 slots, listening on 127.0.0.1:7101
+shard 0/4: 1024 clusters, 9206016 slots, listening on 127.0.0.1:7100
+shard 2/4: 1024 clusters, 9205952 slots, listening on 127.0.0.1:7102
+shard 3/4: 1024 clusters, 9205984 slots, listening on 127.0.0.1:7103
+Connection to 127.0.0.1 port 7100 [tcp/font-service] succeeded!
+Connection to 127.0.0.1 port 7101 [tcp/*] succeeded!
+Connection to 127.0.0.1 port 7102 [tcp/*] succeeded!
+Connection to 127.0.0.1 port 7103 [tcp/*] succeeded!
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+18380565 rows, 4096 clusters, 2677 queries
+  baseline | ivf 64 probes, 500 cand, rerank full: R@10 0.9192, p50 1.28 ms, p99 3.36 ms, scanned 622762 | delta rows 0, delta slots 0, deleted 0
+  baseline | ivf 64 probes, 500 cand, rerank tiered200: R@10 0.9191, p50 1.45 ms, p99 2.00 ms, scanned 622762 | delta rows 0, delta slots 0, deleted 0
+  baseline | ivf 64 probes, 500 cand, rerank ssd300: R@10 0.9120, p50 1.56 ms, p99 2.06 ms, scanned 622762 | delta rows 0, delta slots 0, deleted 0
+deleted 1838056 rows in 0.76 s
+   deleted | ivf 64 probes, 500 cand, rerank full: R@10 0.9183, p50 1.27 ms, p99 2.92 ms, scanned 622762 | delta rows 0, delta slots 0, deleted 1838056
+   deleted | ivf 64 probes, 500 cand, rerank tiered200: R@10 0.9182, p50 1.49 ms, p99 1.96 ms, scanned 622762 | delta rows 0, delta slots 0, deleted 1838056
+   deleted | ivf 64 probes, 500 cand, rerank ssd300: R@10 0.9111, p50 1.58 ms, p99 2.06 ms, scanned 622762 | delta rows 0, delta slots 0, deleted 1838056
+inserted 1838056 rows in 26.48 s (69423 rows/s), log 1.44 GB
+reinserted | ivf 64 probes, 500 cand, rerank full: R@10 0.9192, p50 1.84 ms, p99 6.60 ms, scanned 685851 | delta rows 1838056, delta slots 3676112, deleted 1838056
+reinserted | ivf 64 probes, 500 cand, rerank tiered200: R@10 0.9191, p50 1.73 ms, p99 2.99 ms, scanned 685851 | delta rows 1838056, delta slots 3676112, deleted 1838056
+reinserted | ivf 64 probes, 500 cand, rerank ssd300: R@10 0.9120, p50 1.77 ms, p99 4.18 ms, scanned 685851 | delta rows 1838056, delta slots 3676112, deleted 1838056
+replayed 1838056 inserts, 1838056 deletes in 8.36 s (torn 0 B)
+  replayed | ivf 64 probes, 500 cand, rerank full: R@10 0.9192, p50 1.43 ms, p99 3.42 ms, scanned 685851 | delta rows 1838056, delta slots 3676112, deleted 1838056
+  replayed | ivf 64 probes, 500 cand, rerank tiered200: R@10 0.9191, p50 1.61 ms, p99 2.16 ms, scanned 685851 | delta rows 1838056, delta slots 3676112, deleted 1838056
+  replayed | ivf 64 probes, 500 cand, rerank ssd300: R@10 0.9120, p50 1.72 ms, p99 4.61 ms, scanned 685851 | delta rows 1838056, delta slots 3676112, deleted 1838056
+compacted: 36761130 slots kept, 3676112 dropped, 3.6 s
+ compacted | ivf 64 probes, 500 cand, rerank full: R@10 0.9192, p50 1.28 ms, p99 9.55 ms, scanned 622762 | delta rows 1838056, delta slots 0, deleted 1838056
+ compacted | ivf 64 probes, 500 cand, rerank tiered200: R@10 0.9191, p50 1.46 ms, p99 2.24 ms, scanned 622762 | delta rows 1838056, delta slots 0, deleted 1838056
+ compacted | ivf 64 probes, 500 cand, rerank ssd300: R@10 0.9120, p50 1.52 ms, p99 2.68 ms, scanned 622762 | delta rows 1838056, delta slots 0, deleted 1838056
+18380565 rows, 4096 clusters, 2677 queries
+selectivity 1: 18380565 rows from 385713 hosts, truth in 22.7 s
+           post: R@10 0.9222, p50 1.23 ms, p99 7.43 ms, probed 64, scanned 629545, reranked 416
+   expand 20000: R@10 0.6622, p50 0.19 ms, p99 1.64 ms, probed 3, scanned 25559, reranked 475
+   expand 60000: R@10 0.7737, p50 0.26 ms, p99 0.68 ms, probed 7, scanned 65544, reranked 451
+  expand 200000: R@10 0.8615, p50 0.51 ms, p99 0.91 ms, probed 22, scanned 206064, reranked 431
+    auto (Post): R@10 0.9222, p50 1.15 ms, p99 1.58 ms, probed 64, scanned 629545, reranked 416
+selectivity 0.5: 9190342 rows from 205897 hosts, truth in 10.4 s
+           post: R@10 0.9110, p50 1.21 ms, p99 1.83 ms, probed 64, scanned 629545, reranked 418
+   expand 20000: R@10 0.7167, p50 0.24 ms, p99 0.55 ms, probed 5, scanned 46744, reranked 462
+   expand 60000: R@10 0.8169, p50 0.40 ms, p99 0.72 ms, probed 14, scanned 130974, reranked 441
+  expand 200000: R@10 0.8918, p50 0.93 ms, p99 1.55 ms, probed 45, scanned 434077, reranked 423
+    auto (Post): R@10 0.9110, p50 1.19 ms, p99 1.72 ms, probed 64, scanned 629545, reranked 418
+selectivity 0.1: 2073361 rows from 35652 hosts, truth in 1.8 s
+           post: R@10 0.8867, p50 1.38 ms, p99 2.00 ms, probed 64, scanned 629545, reranked 426
+   expand 20000: R@10 0.8037, p50 0.70 ms, p99 1.30 ms, probed 24, scanned 227798, reranked 442
+   expand 60000: R@10 0.8760, p50 1.59 ms, p99 2.46 ms, probed 67, scanned 650983, reranked 427
+  expand 200000: R@10 0.9366, p50 4.22 ms, p99 5.47 ms, probed 208, scanned 2019973, reranked 417
+  auto (Expand(200000)): R@10 0.9366, p50 4.19 ms, p99 5.44 ms, probed 208, scanned 2019973, reranked 417
+selectivity 0.01: 183811 rows from 1389 hosts, truth in 0.2 s
+           post: R@10 0.7776, p50 1.96 ms, p99 3.08 ms, probed 64, scanned 629545, reranked 451
+   expand 20000: R@10 0.8775, p50 10.17 ms, p99 19.89 ms, probed 371, scanned 3635170, reranked 432
+   expand 60000: R@10 0.9213, p50 15.95 ms, p99 33.79 ms, probed 706, scanned 6700003, reranked 429
+  expand 200000: R@10 0.9499, p50 31.39 ms, p99 52.64 ms, probed 1588, scanned 14531179, reranked 427
+          brute: R@10 0.9999, p50 2.25 ms, p99 2.47 ms, probed 0, scanned 0, reranked 183811
+   auto (Brute): R@10 0.9999, p50 2.24 ms, p99 2.40 ms, probed 0, scanned 0, reranked 183811
+selectivity 0.001: 18390 rows from 659 hosts, truth in 0.1 s
+           post: R@10 0.7712, p50 1.32 ms, p99 1.99 ms, probed 64, scanned 629545, reranked 417
+   expand 20000: R@10 0.9879, p50 37.65 ms, p99 43.04 ms, probed 1788, scanned 16653068, reranked 392
+   expand 60000: R@10 0.9888, p50 62.18 ms, p99 67.26 ms, probed 3322, scanned 30697024, reranked 393
+  expand 200000: R@10 0.9888, p50 62.02 ms, p99 67.46 ms, probed 3322, scanned 30697024, reranked 393
+          brute: R@10 0.9987, p50 0.21 ms, p99 0.26 ms, probed 0, scanned 0, reranked 18390
+   auto (Brute): R@10 0.9987, p50 0.22 ms, p99 0.25 ms, probed 0, scanned 0, reranked 18390
+18380565 rows, 4096 clusters, 2677 queries
+bm25: p50 16.85 ms, p99 79.97 ms, 6628655 postings per query
+| run | R@10 vs 768 | R@10 vs 256 | nDCG@10 dl21 | nDCG@10 dl22 | nDCG@10 dl23 | nDCG@10 dev | vectors scanned | reranked |
+|---|---|---|---|---|---|---|---|---|
+| bm25 (k1 0.9, b 0.4) | 0.1896 | 0.1831 | 0.4222 | 0.1928 | 0.1706 | 0.1653 | - | - |
+| flat f32 768-d (exact) | 1.0000 | 0.8226 | 0.5657 | 0.3142 | 0.2551 | 0.2420 | - | - |
+| ivf 64:500:tiered200 | 0.9191 | 0.7891 | 0.5564 | 0.3130 | 0.2512 | 0.2378 | - | - |
+| rrf(bm25 x1, exact), depth 100 | 0.4552 | 0.4339 | 0.5361 | 0.2982 | 0.2547 | 0.2239 | - | - |
+| rrf(bm25 x1, ivf 64:500:tiered200), depth 100 | 0.4474 | 0.4283 | 0.5346 | 0.2973 | 0.2539 | 0.2216 | - | - |
+| rrf(bm25 x0.3, exact), depth 100 | 0.7583 | 0.6867 | 0.5635 | 0.3162 | 0.2694 | 0.2408 | - | - |
+| rrf(bm25 x0.3, ivf 64:500:tiered200), depth 100 | 0.7164 | 0.6627 | 0.5560 | 0.3158 | 0.2647 | 0.2376 | - | - |
+| rrf(bm25 x0.2, exact), depth 100 | 0.8318 | 0.7426 | 0.5666 | 0.3166 | 0.2665 | 0.2431 | - | - |
+| rrf(bm25 x0.2, ivf 64:500:tiered200), depth 100 | 0.7825 | 0.7151 | 0.5567 | 0.3148 | 0.2614 | 0.2395 | - | - |
+done

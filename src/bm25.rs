@@ -242,7 +242,7 @@ pub fn build(corpus: &Corpus, text: &[PathBuf], out: &Path) -> Result<BuildStats
         post_off.push(post_off.last().unwrap() + p.post[id as usize].len() as u64);
         df.push(p.df[id as usize]);
     }
-    (w_terms.finish()?, w_post.finish()?);
+    w_terms.finish()?; w_post.finish()?;
     write_vec(&out.join("terms.off"), &term_off)?;
     write_vec(&out.join("post.off"), &post_off)?;
     write_vec(&out.join("df.u32"), &df)?;

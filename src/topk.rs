@@ -25,11 +25,10 @@ impl<S: Copy + PartialOrd> TopK<S> {
 
     #[inline]
     pub fn push(&mut self, score: S, id: u32) {
-        if let Some(t) = self.threshold {
-            if score <= t {
+        if let Some(t) = self.threshold
+            && score <= t {
                 return;
             }
-        }
         self.items.push((score, id));
         if self.items.len() >= 2 * self.k {
             self.compact();

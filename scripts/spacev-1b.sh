@@ -26,6 +26,9 @@ if [ "$BITS" = 1 ]; then
   $B search --gt $G --configs 64:500,64:1000,128:1000,256:2000 --label 1B
   $B search --gt $G --configs 64:1000,128:1000 --nq 2000 --cold --label 1B
 else
-  $B search --gt $G --configs 40:100:1000,48:100:1000,64:100:1000,128:200:2000 --nq 10000 \
+  $B search --gt $G --configs 128:100:1000:m0.4 --nq 10000 \
     --cold --hot-gb $HOT_GB --label 1B-b$BITS-hot$HOT_GB
+  for c in 96:100:1000:m0.6 192:200:2000:m1.0; do
+    $B search --gt $G --configs $c --nq 10000 --cold --hot-gb $HOT_GB --label 1B-b$BITS-hot$HOT_GB
+  done
 fi

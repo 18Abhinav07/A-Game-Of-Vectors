@@ -28,11 +28,11 @@ fn quantize(r: &[f32], bits: u32) -> Vec<f32> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let index = Index::open(Path::new("data/sv1b"), Path::new("data/spacev"), 0)?;
+    let index = Index::open(Path::new("data/sv1b-b2"), Path::new("data/spacev"), 0)?;
     let (_, _, qs) = bigann::read_bin::<i8>(Path::new("data/spacev/query.i8bin"))?;
     let (_, gk, gt_ids, gt_dist) = bigann::read_gt(Path::new("data/spacev/public_query_gt100.bin"))?;
     let qs: Vec<[i8; D]> = qs.chunks_exact(D).map(|q| q.try_into().unwrap()).collect();
-    let p = Params { nprobe: 64, cand: C1, k: 10, refine: 0 };
+    let p = Params { nprobe: 64, cand: C1, k: 10, refine: 0, margin: 0.0 };
     let c2s = [20usize, 50, 100, 150, 200, 300, 500];
     let bitss = [1u32, 2, 3, 4];
     let mut rec = vec![vec![0f64; c2s.len()]; bitss.len()];
