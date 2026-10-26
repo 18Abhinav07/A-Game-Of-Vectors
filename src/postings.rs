@@ -22,16 +22,23 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 use crate::lut::{BLOCK, BLOCK_BYTES};
+
+/// Bytes of one block's slice of a record with `block_bytes` of codes per block.
+pub const fn block_record(block_bytes: usize) -> usize {
+    block_bytes + BLOCK * 2 * 4 + BLOCK * 4
+}
 use crate::store::{Mapped, read_vec, write_vec};
 
-const ALIGN: u64 = 4096;
+pub const ALIGN: u64 = 4096;
 /// Bytes of one block's slice of a record.
-pub const BLOCK_RECORD: usize = BLOCK_BYTES + BLOCK * 2 * 4 + BLOCK * 4;
+pub const BLOCK_RECORD: usize = block_record(BLOCK_BYTES);
 
 /// One cluster's record, read from disk or the cache. u32 storage keeps it 4-byte aligned, so
 /// the factor and id sections cast in place.
 pub struct Record {
     nb: usize,
+    /// Code bytes per block: BLOCK_BYTES for the M1 index, 512 for SPACEV (D19).
+    bb: usize,
     words: Vec<u32>,
 }
 
@@ -41,16 +48,16 @@ impl Record {
     }
 
     pub fn blocks(&self) -> &[u8] {
-        &self.bytes()[..self.nb * BLOCK_BYTES]
+        &self.bytes()[..self.nb * self.bb]
     }
 
     pub fn factors(&self) -> &[f32] {
-        let a = self.nb * BLOCK_BYTES / 4;
+        let a = self.nb * self.bb / 4;
         bytemuck::cast_slice(&self.words[a..a + self.nb * BLOCK * 2])
     }
 
     pub fn ids(&self) -> &[u32] {
-        let a = (self.nb * BLOCK_BYTES + self.nb * BLOCK * 8) / 4;
+        let a = (self.nb * self.bb + self.nb * BLOCK * 8) / 4;
         &self.words[a..a + self.nb * BLOCK]
     }
 
@@ -166,6 +173,7 @@ pub struct Postings {
     file: Arc<File>,
     off: Vec<u64>,
     nblocks: Vec<u32>,
+    bb: usize,
     cache: Option<Cache>,
     pub stats: IoStats,
 }
@@ -173,6 +181,11 @@ pub struct Postings {
 impl Postings {
     /// `cache_bytes` = 0 disables the cache: every probe is a read.
     pub fn open(dir: &Path, cache_bytes: usize) -> Result<Self> {
+        Self::open_with(dir, cache_bytes, BLOCK_BYTES)
+    }
+
+    /// As `open`, for records whose blocks hold `block_bytes` of codes.
+    pub fn open_with(dir: &Path, cache_bytes: usize, block_bytes: usize) -> Result<Self> {
         let off: Vec<u64> = read_vec(&dir.join("postings.off")).context("postings.off: run `index --pack` first")?;
         let block_off: Vec<u64> = read_vec(&dir.join("block_off.u64"))?;
         anyhow::ensure!(off.len() == block_off.len(), "postings.off does not match block_off.u64");
@@ -182,6 +195,7 @@ impl Postings {
             file: Arc::new(File::open(&path).with_context(|| format!("open {}", path.display()))?),
             off,
             nblocks,
+            bb: block_bytes,
             cache: (cache_bytes > 0).then(|| Cache::new(cache_bytes)),
             stats: IoStats::default(),
         })
@@ -223,11 +237,11 @@ impl Postings {
             .iter()
             .map(|&i| {
                 let c = clusters[i] as usize;
-                let (file, nb, off) = (self.file.clone(), self.nblocks[c] as usize, self.off[c]);
+                let (file, nb, off, bb) = (self.file.clone(), self.nblocks[c] as usize, self.off[c], self.bb);
                 Box::new(move || {
-                    let mut words = vec![0u32; nb * BLOCK_RECORD / 4];
+                    let mut words = vec![0u32; nb * block_record(bb) / 4];
                     file.read_exact_at(bytemuck::cast_slice_mut(&mut words), off).expect("postings.bin read");
-                    Record { nb, words }
+                    Record { nb, bb, words }
                 }) as Box<dyn FnOnce() -> Record + Send>
             })
             .collect();
@@ -258,7 +272,7 @@ mod tests {
     use super::*;
 
     fn rec(nb: usize) -> Arc<Record> {
-        Arc::new(Record { nb, words: vec![0; nb * BLOCK_RECORD / 4] })
+        Arc::new(Record { nb, bb: BLOCK_BYTES, words: vec![0; nb * BLOCK_RECORD / 4] })
     }
 
     #[test]

@@ -4,7 +4,9 @@ A Rust vector search engine that reproduces, measures and extends the design Exa
 [How we built a web-scale vector database](https://exa.ai/blog/building-web-scale-vector-db).
 It serves **113.5M passages** (the TREC-RAG 2024 MS MARCO v2.1 corpus, Arctic-Embed-M v1.5)
 on one 24 GB laptop: R@10 0.909 at 4.8 ms p50 and 460 QPS with the codes in RAM, or R@10 0.902
-at 13 ms in **225 MB of RAM** with everything on SSD.
+at 13 ms in **225 MB of RAM** with everything on SSD. On **1 billion vectors** (MS SPACEV-1B) the
+same laptop builds an index in about 15 minutes and serves R@10 0.911 at 7.3 ms p50, or 0.964 at
+28 ms, in 298 MB of RAM.
 
 Exa's post describes the design but publishes no recall or latency numbers. This repo
 measures it against exact search and NIST relevance labels, finds where it loses recall,
@@ -46,6 +48,11 @@ and fixes that.
   above 0.911 from 100% down to 0.1% selectivity. A BM25 index over all 18.4M passages, and
   weighted reciprocal rank fusion: equal-weight fusion lowers nDCG@10 (DL21 0.566 → 0.536),
   and a BM25 weight of 0.2 to 0.3 gains up to 1.4 pt (DL23).
+- **One billion vectors on one laptop**: SPACEV-1B (1B × 100-d int8, L2) streamed in ten
+  10 GB chunks, two-level k-means into 131,072 leaves, out-of-core encode and pack (28 GB of
+  postings), and an exact rerank read straight from the downloaded chunks. Compressed 4-bit
+  rerank rows lost 8 points of recall, so they were dropped. Recall does not fall from 100M to
+  1B at a fixed config.
 - **Measured against FAISS** (IVF-PQ, fast-scan PQ, IVF-RaBitQ) at the same code budget.
 - **Integer rerank** on `sdot` (int8 query × int8 row) and centroid routing on AMX via
   Accelerate.
@@ -82,25 +89,24 @@ because of SOAR. FAISS's `IVF,RaBitQ` reaches 0.903 at 128 probes; sieve reaches
 Full tables, ablations and kernel numbers: [BENCHMARKS.md](BENCHMARKS.md). Every design decision
 and the evidence for it: [DESIGN.md](DESIGN.md).
 
-## Scaling to 1B: what the measurements imply
-These are projections from measured per-slot sizes, not runs. SSD mode stores 44 B per slot
-(32 B code, two f32 factors, u32 id), and SOAR stores each vector twice.
+## Results: one billion vectors (SPACEV-1B, 131,072 leaves)
+The M2 corpus stops at 113.5M because that is all of it, so the 1B claim is tested on the
+big-ann-benchmarks SPACEV-1B set instead, on the same 24 GB laptop with no cloud.
 
-| | M1 (measured) | M2 (measured) | 1B (projected) |
-|---|---|---|---|
-| clusters | 4,096 | 16,384 | ~131k |
-| posting lists on SSD | 1.63 GB | 10.03 GB | ~88 GB |
-| int8 rerank rows on SSD | 14 GB | 87 GB | 768 GB |
-| RAM: centroids + offsets | ~4 MB | ~17 MB | ~135 MB |
-| peak RSS, no cache (incl. queries, truth) | 287 MB | 225 MB | well under 1 GB |
-| bytes read per query, 64 probes | 27 MB | 40 MB | ~43 MB |
+| nprobe:cand | R@10 (100M) | R@10 (1B) | p50 (1B) | p99 (1B) | QPS (1B) |
+|---|---|---|---|---|---|
+| 64:500 | 0.899 | 0.911 | 7.3 ms | 9.9 ms | 147 |
+| 128:1000 | 0.938 | 0.942 | 14.6 ms | 24.2 ms | 69 |
+| 256:2000 | 0.965 | 0.964 | 28.2 ms | 37.3 ms | 35 |
+| 128:1000, cold | 0.938 | 0.944 | 18.2 ms | 25.4 ms | 55 |
 
-RAM stops being the limit: it scales with the cluster count, not N. Disk capacity and
-**bandwidth** take its place. At ~40 MB per query, one NVMe drive with ~3–6 GB/s sustains roughly
-75–150 cold queries/s, and a cluster cache lifts that in proportion to its hit rate. So a 1B index
-fits on one machine with a 1 TB SSD, but a production QPS target means sharding across
-nodes, which is how Exa describes its own deployment. Recall at 1B for a fixed probe count is
-untested. Bigger clusters and more vectors per probe both work against it.
+- **Build**: train 326 s, encode 1.8M rows/s (ten 100M chunks at about 58 s each, overlapped
+  with the download), pack 38 s. Disk: 28.3 GB of postings and the 100 GB of base chunks,
+  which double as the exact rerank store.
+- **RAM is not the limit**: search peaks at 298 MB of RSS. It scales with the leaf count, not N.
+- **The bottleneck is the exact rerank**: 100 GB of rows cannot be cached in 24 GB, so 55–70% of query
+  time is reading candidate rows from SSD, and warm is barely faster than cold. Fewer, better
+  candidates (a RAM middle tier or a bound-driven cut) are the next lever, then more nodes.
 
 ## Production gaps
 What a real service would still need, roughly in order:
@@ -114,6 +120,7 @@ What a real service would still need, roughly in order:
 - **I/O**: macOS has no io_uring, so queue depth comes from threads blocked in `pread`. On Linux,
   io_uring with registered buffers would remove the thread pool.
 - **Observability**: per-stage histograms, cache and I/O metrics exported, not just bench JSON.
+- **Leaf balance at 1B**: the largest SPACEV leaf is 17× the mean, which sets the scan tail.
 - **Graph baselines**: FAISS IVF-PQ, fast-scan and RaBitQ are measured. HNSW/DiskANN on the
   same slice is not.
 
@@ -123,11 +130,14 @@ cargo test --release
 ./scripts/m1.sh          # 10 shards: download, ingest, index (plain + SOAR), eval, bench
 ./scripts/m2.sh          # all 60 shards, streamed and deleted as they are ingested
 ./scripts/ac-bench.sh    # M1 latency re-runs on AC power (refuses on battery or Low Power Mode)
+./scripts/spacev.sh      # SPACEV-1B: download the ten 10 GB base chunks, queries, ground truth
+./scripts/spacev-1b.sh   # run alongside: train, add each chunk as it lands, pack, search
 ```
 Binaries: `ingest` (parquet → codes, int8 rows, ground truth), `index` (k-means, SOAR, tiers),
 `search [--ssd --cache-mb N] [--shards host:port,... [--two-phase]] eval | routing | bench [--cold]`,
 `search live` (delete, reinsert, replay, compact), `bm25` (inverted index from the passage text),
-`search hybrid | filter`, `shard --shard i --of n --listen host:port [--ssd]`. Config strings are
+`search hybrid | filter`, `shard --shard i --of n --listen host:port [--ssd]`, `spacev train | add | pack | search [--cold]`
+(SPACEV-1B). Config strings are
 `nprobe:cand:rerank[:bM[xW]][:pΔ][:sN[k]]`, with rerank one of `none | prefix | full | tieredN | ssdN`.
 
 ## Layout
@@ -146,5 +156,7 @@ src/store.rs   mmap, page eviction/residency, blocking I/O pool
 src/blas.rs    Accelerate sgemm (AMX)
 src/data.rs    parquet streaming, topics, qrels
 src/eval.rs    recall, nDCG@10 (MaxP)
-examples/      kernel, SSD and middle-tier experiments
+src/bigann.rs  SPACEV-1B: L2 RaBitQ, two-level leaves, out-of-core add/pack, chunk rerank
+src/bin/spacev.rs  train | add | pack | search for the 1B track
+examples/      kernel, SSD, middle-tier and pread/mmap experiments
 ```

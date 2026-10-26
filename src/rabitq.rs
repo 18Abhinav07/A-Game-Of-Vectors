@@ -17,7 +17,7 @@
 
 use crate::PDIM;
 use crate::ivf::Rng;
-use crate::lut::Lut;
+use crate::lut::{GROUPS, Lut};
 
 /// Rounds of random sign flips followed by a Walsh-Hadamard transform. Three rounds make the
 /// result behave like a uniformly random rotation for this purpose (as in FALCONN and RaBitQ's
@@ -33,13 +33,23 @@ pub struct Rotation {
 
 impl Rotation {
     pub fn new(seed: u64) -> Self {
+        Self::with_dim(seed, PDIM)
+    }
+
+    /// A rotation of `d`-dim vectors; `d` must be a power of two.
+    pub fn with_dim(seed: u64, d: usize) -> Self {
+        assert!(d.is_power_of_two());
         let mut rng = Rng::new(seed);
-        Self { signs: (0..ROUNDS * PDIM).map(|_| if rng.next() & 1 == 1 { 1.0 } else { -1.0 }).collect() }
+        Self { signs: (0..ROUNDS * d).map(|_| if rng.next() & 1 == 1 { 1.0 } else { -1.0 }).collect() }
     }
 
     pub fn from_signs(signs: Vec<f32>) -> Self {
-        assert_eq!(signs.len(), ROUNDS * PDIM, "rotation file");
+        assert!(signs.len() % ROUNDS == 0 && (signs.len() / ROUNDS).is_power_of_two(), "rotation file");
         Self { signs }
+    }
+
+    pub fn dim(&self) -> usize {
+        self.signs.len() / ROUNDS
     }
 
     pub fn signs(&self) -> &[f32] {
@@ -48,12 +58,13 @@ impl Rotation {
 
     /// In place, orthogonal: preserves norms and inner products.
     pub fn apply(&self, v: &mut [f32]) {
-        debug_assert_eq!(v.len(), PDIM);
-        for s in self.signs.chunks_exact(PDIM) {
+        let d = self.dim();
+        debug_assert_eq!(v.len(), d);
+        for s in self.signs.chunks_exact(d) {
             v.iter_mut().zip(s).for_each(|(x, s)| *x *= s);
             fwht(v);
         }
-        let norm = (PDIM as f32).powf(-1.5);
+        let norm = (d as f32).powf(-1.5);
         v.iter_mut().for_each(|x| *x *= norm);
     }
 }
@@ -89,7 +100,7 @@ pub fn encode(x_rot: &[f32], c_rot: &[f32], code: &mut [u8]) -> [f32; 2] {
         // x sits on its centroid: ⟨c, q⟩ is already exact.
         return [0.0, 0.0];
     }
-    let d = PDIM as f32;
+    let d = x_rot.len() as f32;
     let nr = nr2.sqrt();
     let od = l1 / (nr * d.sqrt());
     let err = nr * EPS0 * ((1.0 - od * od) / (od * od * (d - 1.0))).max(0.0).sqrt();
@@ -98,13 +109,13 @@ pub fn encode(x_rot: &[f32], c_rot: &[f32], code: &mut [u8]) -> [f32; 2] {
 
 /// Per-query state: the LUT over the rotated query and the affine map from a LUT score to
 /// Σ sign_i·(Pq)_i, so a slot's estimate is `cent + mul·(a·lut_score + b)`.
-pub struct Query {
-    pub lut: Lut,
+pub struct Query<const G: usize = GROUPS> {
+    pub lut: Lut<G>,
     pub a: f32,
     pub b: f32,
 }
 
-impl Query {
+impl<const G: usize> Query<G> {
     pub fn new(rot: &Rotation, q: &[f32]) -> Self {
         let mut qr = q.to_vec();
         rot.apply(&mut qr);
@@ -162,7 +173,7 @@ mod tests {
             rot.apply(&mut cr);
             let mut code = [0u8; crate::CODE_BYTES];
             let [mul, err] = encode(&xr, &cr, &mut code);
-            let qq = Query::new(&rot, &q);
+            let qq: Query = Query::new(&rot, &q);
             let est = qq.estimate(dot_f32(&c, &q), mul, qq.lut.score_code(&code));
             let truth = dot_f32(&x, &q);
             sq_err += ((est - truth) as f64).powi(2);
