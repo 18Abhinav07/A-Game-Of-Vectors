@@ -25,7 +25,12 @@ use crate::lut::{BLOCK, BLOCK_BYTES};
 
 /// Bytes of one block's slice of a record with `block_bytes` of codes per block.
 pub const fn block_record(block_bytes: usize) -> usize {
-    block_bytes + BLOCK * 2 * 4 + BLOCK * 4
+    block_record_ext(block_bytes, 0)
+}
+
+/// As `block_record`, for records that end with `extra` more bytes per slot.
+pub const fn block_record_ext(block_bytes: usize, extra: usize) -> usize {
+    block_bytes + BLOCK * 2 * 4 + BLOCK * 4 + BLOCK * extra
 }
 use crate::store::{Mapped, read_vec, write_vec};
 
@@ -39,6 +44,8 @@ pub struct Record {
     nb: usize,
     /// Code bytes per block: BLOCK_BYTES for the M1 index, 512 for SPACEV (D19).
     bb: usize,
+    /// Bytes per slot after the ids (SPACEV's multi-bit refinement, D20), a multiple of 4.
+    extra: usize,
     words: Vec<u32>,
 }
 
@@ -59,6 +66,12 @@ impl Record {
     pub fn ids(&self) -> &[u32] {
         let a = (self.nb * self.bb + self.nb * BLOCK * 8) / 4;
         &self.words[a..a + self.nb * BLOCK]
+    }
+
+    /// The per-slot extra section: `extra` bytes for each of the nb · BLOCK slots.
+    pub fn extra(&self) -> &[u8] {
+        let a = self.nb * self.bb + self.nb * BLOCK * 12;
+        &self.bytes()[a..a + self.nb * BLOCK * self.extra]
     }
 
     fn len_bytes(&self) -> usize {
@@ -174,6 +187,7 @@ pub struct Postings {
     off: Vec<u64>,
     nblocks: Vec<u32>,
     bb: usize,
+    extra: usize,
     cache: Option<Cache>,
     /// Records held in RAM for the life of the index (`pin`), checked before the cache.
     pinned: std::sync::OnceLock<Vec<Option<Arc<Record>>>>,
@@ -188,6 +202,12 @@ impl Postings {
 
     /// As `open`, for records whose blocks hold `block_bytes` of codes.
     pub fn open_with(dir: &Path, cache_bytes: usize, block_bytes: usize) -> Result<Self> {
+        Self::open_ext(dir, cache_bytes, block_bytes, 0)
+    }
+
+    /// As `open_with`, for records with `extra` bytes per slot after the ids.
+    pub fn open_ext(dir: &Path, cache_bytes: usize, block_bytes: usize, extra: usize) -> Result<Self> {
+        assert_eq!(extra % 4, 0);
         let off: Vec<u64> = read_vec(&dir.join("postings.off")).context("postings.off: run `index --pack` first")?;
         let block_off: Vec<u64> = read_vec(&dir.join("block_off.u64"))?;
         anyhow::ensure!(off.len() == block_off.len(), "postings.off does not match block_off.u64");
@@ -198,6 +218,7 @@ impl Postings {
             off,
             nblocks,
             bb: block_bytes,
+            extra,
             cache: (cache_bytes > 0).then(|| Cache::new(cache_bytes)),
             pinned: std::sync::OnceLock::new(),
             stats: IoStats::default(),
@@ -244,11 +265,11 @@ impl Postings {
     }
 
     fn read_job(&self, c: usize) -> Box<dyn FnOnce() -> Record + Send> {
-        let (file, nb, off, bb) = (self.file.clone(), self.nblocks[c] as usize, self.off[c], self.bb);
+        let (file, nb, off, bb, extra) = (self.file.clone(), self.nblocks[c] as usize, self.off[c], self.bb, self.extra);
         Box::new(move || {
-            let mut words = vec![0u32; nb * block_record(bb) / 4];
+            let mut words = vec![0u32; nb * block_record_ext(bb, extra) / 4];
             file.read_exact_at(bytemuck::cast_slice_mut(&mut words), off).expect("postings.bin read");
-            Record { nb, bb, words }
+            Record { nb, bb, extra, words }
         })
     }
 
@@ -301,7 +322,7 @@ mod tests {
     use super::*;
 
     fn rec(nb: usize) -> Arc<Record> {
-        Arc::new(Record { nb, bb: BLOCK_BYTES, words: vec![0; nb * BLOCK_RECORD / 4] })
+        Arc::new(Record { nb, bb: BLOCK_BYTES, extra: 0, words: vec![0; nb * BLOCK_RECORD / 4] })
     }
 
     #[test]

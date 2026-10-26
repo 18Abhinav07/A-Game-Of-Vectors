@@ -42,6 +42,9 @@ enum Cmd {
         sample: usize,
         #[arg(long, default_value_t = 10)]
         iters: usize,
+        /// Refinement code width stored per slot (D20): 1 = 1-bit codes only.
+        #[arg(long, default_value_t = 1)]
+        bits: usize,
     },
     Add {
         #[arg(long)]
@@ -64,7 +67,8 @@ enum Cmd {
         queries: PathBuf,
         #[arg(long)]
         gt: PathBuf,
-        /// nprobe:cand, comma separated.
+        /// nprobe:cand[:refine], comma separated (refine: the 1-bit shortlist re-estimated by a
+        /// multi-bit index before the best `cand` are reranked).
         #[arg(long, default_value = "32:500,64:500,128:1000,256:1000")]
         configs: String,
         /// Use the first this many queries.
@@ -134,12 +138,14 @@ fn pct(v: &mut [f64], p: f64) -> f64 {
 fn main() -> Result<()> {
     let a = Args::parse();
     match a.cmd {
-        Cmd::Train { base, rows, k1, k2, sample, iters } => {
+        Cmd::Train { base, rows, k1, k2, sample, iters, bits } => {
             let m = bigann::map_base(&base)?;
             let b = m.as_slice();
             let b = &b[..rows.map_or(b.len(), |r| r * D)];
+            anyhow::ensure!((1..=bigann::MAX_BITS).contains(&bits), "--bits must be 1..={}", bigann::MAX_BITS);
             let st = bigann::train(b, &a.index, k1, k2, sample, iters)?;
-            log(&a.log, serde_json::json!({"kind": "train", "index": a.index, "k1": k1, "k2": k2, "leaves": st.leaves, "sample": sample, "iters": iters, "seconds": st.seconds}))?;
+            sieve::store::write_vec(&a.index.join("bits.u64"), &[bits as u64])?;
+            log(&a.log, serde_json::json!({"kind": "train", "index": a.index, "k1": k1, "k2": k2, "leaves": st.leaves, "bits": bits, "sample": sample, "iters": iters, "seconds": st.seconds}))?;
         }
         Cmd::Add { base, first, rows, buckets } => {
             let model = Model::open(&a.index)?;
@@ -194,7 +200,8 @@ fn main() -> Result<()> {
                 let mut it = cfg.split(':');
                 let nprobe: usize = it.next().unwrap().parse()?;
                 let cand: usize = it.next().unwrap_or("500").parse()?;
-                let p = Params { nprobe, cand, k: 10 };
+                let refine: usize = it.next().unwrap_or("0").parse()?;
+                let p = Params { nprobe, cand, k: 10, refine };
                 if diag {
                     diagnose(&index, qs, &gt_ids, &gt_dist, gk, &p);
                 }
@@ -235,7 +242,7 @@ fn main() -> Result<()> {
                     tm.scanned as f64 / n
                 );
                 log(&a.log, serde_json::json!({
-                    "kind": "search", "label": label, "index": a.index, "gt": gt, "nq": nq, "nprobe": nprobe, "cand": cand,
+                    "kind": "search", "label": label, "index": a.index, "gt": gt, "nq": nq, "nprobe": nprobe, "cand": cand, "refine": refine, "bits": index.model.bits,
                     "cold": cold, "cache_mb": cache_mb, "hot_bytes": hot_bytes, "recall10": rec / n, "p50_ms": p50, "p99_ms": p99, "mean_ms": mean,
                     "route_ms": ms(tm.route), "scan_ms": ms(tm.scan), "io_ms": ms(tm.io_wait), "rerank_ms": ms(tm.rerank),
                     "scanned": tm.scanned as f64 / n, "mb_per_query": mb, "qps": qps,
