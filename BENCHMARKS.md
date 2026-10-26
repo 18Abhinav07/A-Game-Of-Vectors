@@ -648,19 +648,56 @@ postings pinned (`--hot-gb 0.5 --cold`), rerank rows read cold.
 | DiskANN L 40, beam 1, 48 thr | 0.923 | 4,606 | 10.4 ms | 49.6 |
 | DiskANN L 40, beam 4, 12 thr | 0.930 | 2,265 | 5.2 ms | 60.5 |
 | DiskANN L 40, beam 4, 48 thr | 0.930 | 3,913–4,662 | 10.3–12.2 ms | 60.5 |
-| DiskANN L 120, beam 4, 48 thr | 0.971 | 1,726 | 27.8 ms | 138 |
+| DiskANN L 60, beam 1, 12 / 48 thr | 0.944 | 1,932 / 3,355 | 6.2 / 14.3 ms | 69.3 |
+| DiskANN L 80, beam 1, 12 / 48 thr | 0.954 | 1,506 / 2,629 | 8.0 / 18.2 ms | 89.0 |
+| DiskANN L 120, beam 1, 12 / 48 thr | 0.968 | 1,037 / 1,821 | 11.6 / 26.3 ms | 128.6 |
+| DiskANN L 120, beam 4, 12 / 48 thr | 0.971 | 1,005 / 1,726 | 11.9 / 27.8 ms | 138 |
 | sieve 16:50:1000 | 0.839 | 3,574 | 1.04 ms | 50 |
 | sieve 32:50:1000 | 0.894 | 3,546 | 1.24 ms | 50 |
 | sieve 64:50:1000 | 0.930 | 3,313–3,583 | 1.58 ms | 50 |
 | sieve 64:100:1000 | 0.945 | 1,690–1,836 | 1.9 ms | 100 |
+| sieve 64:70:1000 | 0.940 | 2,742 | 1.69 ms | 70 |
+| sieve 96:50:1000 | 0.945 | 3,016 | 1.90 ms | 50 |
+| sieve 96:70:1000 | 0.955 | 2,528 | 2.03 ms | 70 |
+| sieve 96:100:1000 | 0.961 | 1,880 | 2.20 ms | 100 |
+| sieve 128:70:2000 | 0.964 | 2,180 | 2.60 ms | 70 |
+| sieve 128:100:2000 | 0.970 | 1,631 | 2.77 ms | 100 |
+| sieve 128:200:2000 | 0.974 | 985 | 3.45 ms | 200 |
+
+The best of each at matched recall (DiskANN at the 48 threads that maximise its QPS; sieve
+at its default 12 compute and 64 I/O threads):
+
+| strict R@10 | DiskANN QPS, mean latency | sieve QPS, mean latency | DiskANN's QPS lead |
+|---|---|---|---|
+| 0.875 / 0.894 | 7,781, 6.1 ms | 3,546, 1.2 ms | 2.2× (sieve at higher recall) |
+| 0.930 | 4,662, 10.3 ms | 3,583, 1.6 ms | 1.3× |
+| 0.944 / 0.945 | 3,355, 14.3 ms | 3,016, 1.9 ms | 1.1× |
+| 0.954 / 0.955 | 2,629, 18.2 ms | 2,528, 2.0 ms | 1.04× |
+| 0.968 / 0.970 | 1,821, 26.3 ms | 1,631, 2.8 ms | 1.1× (sieve at higher recall) |
+
+### DiskANN with its disk index cached
+The same index and reader after reading the 3.7 GB `_disk.index` file into the page cache
+(`F_NOCACHE` still serves resident pages), 12 threads, peak RSS 0.51 GB plus the cached file:
+
+| | strict R@10 | QPS | mean latency |
+|---|---|---|---|
+| L 20, beam 1 | 0.875 | 34,904 | 0.34 ms |
+| L 40, beam 1 | 0.923 | 21,032 | 0.57 ms |
+| L 80, beam 1 | 0.954 | 11,320 | 1.06 ms |
+| L 120, beam 1 | 0.968 | 8,197 | 1.46 ms |
+
+With ~4.2 GB of RAM, DiskANN is ~8× sieve fully in RAM (1.8 GB). Each cached read still costs
+a syscall and a copy (~7 µs), which is why this is 4–6× below the in-memory index.
 
 What this says:
 - **In RAM, DiskANN is 45–50× faster at equal recall.** sieve is 9× cheaper per candidate and
   scores 120× more of them. sieve uses ~4× less RAM and builds 24× faster.
-- **On SSD at matched RAM, neither wins outright.** sieve has ~3× lower latency at 12 threads (6–7× against DiskANN at 48), because one
-  parallel batch of reads replaces a chain of dependent hops. DiskANN has ~1.3× more peak QPS at 0.93 (~2× at 0.85–0.88),
-  because it drives the SSD harder (~228k reads/s against sieve's ~178k). At the same 12
-  threads, sieve is ahead on both.
+- **On SSD at matched RAM, neither wins outright, and sieve gains as recall rises.** DiskANN's
+  peak-QPS lead is ~2× at 0.88, 1.3× at 0.93 and ~1.05–1.1× from 0.945 to 0.97, where it
+  needs 14–26 ms per query to get there. sieve answers in 1.6–2.8 ms (6–10× lower), because
+  one parallel batch of reads replaces a chain of dependent hops, and the batch stays small
+  (50–100 reads) while DiskANN's chain grows with L. At 12 threads sieve is ahead on both at
+  every recall (at 0.97: 1,631 QPS against 1,037).
 
 Reproduce (DiskANN cloned next to this repo at `8a9ff2d`):
 ```
@@ -673,4 +710,7 @@ $D --quiet run --input-file bench/diskann/disk10m-build.json --output-file resul
 cargo build --release --examples
 scripts/diskann-cold.sh bench/diskann/disk10m-search.json results/diskann-disk10m-cold data/dann/disk10m_R64_L100_pq48
 scripts/diskann-cold.sh bench/diskann/disk10m-beam.json results/diskann-disk10m-beam data/dann/disk10m_R64_L100_pq48
+scripts/diskann-cold.sh bench/diskann/disk10m-hi.json results/diskann-disk10m-hi data/dann/disk10m_R64_L100_pq48
+cat data/dann/disk10m_R64_L100_pq48_disk.index > /dev/null   # warm: cache the index first
+$D --quiet run --input-file bench/diskann/disk10m-warm.json --output-file results/diskann-disk10m-warm.json
 ```

@@ -1,0 +1,94 @@
+######################
+# Running Job 1 of 2 #
+######################
+
+Disk Index Load
+         Data Type: int8
+         Load Path: /Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48
+
+Disk Index Search Phase
+           Queries: /Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin
+       Groundtruth: /Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin
+        Search List:60,80,120
+        Beam Width: 1
+           Recall@: 10
+           Threads: 12
+       Search Mode: graph
+          Distance: squared_l2
+Vector Filters File: none
+Num Nodes to Cache: none (defaults to 0)
+   Search IO Limit: none (defaults to `usize::MAX`)
+    Post Processor: none
+
+Search Stats
+Threads,          : 12
+Beam width,       : 1
+Recall at,        : 10
+Flat search,      : false
+Distance,         : squared_l2
+Vector filters,   : false
+Nodes to cache,   : None
+=======================================================================================================================================================
+ L KNN      QPS  Mean Latency   95% Latency  99.9 Latency    IOs    IO (us)   CPU (us)   PQ Preprocess (us)  Mean Comps  Mean Hops  Cache Hit %  Recall
+=======================================================================================================================================================
+60  10   1932.1      6206.4us        7204us       17120us   69.3   5968.1us    236.3us                2.0us      2900.9       69.3         0.0%  94.350
+80  10   1505.7      7966.1us        8969us       18788us   89.0   7664.9us    299.1us                2.1us      3590.9       89.0         0.0%  95.435
+120  10   1037.1     11563.7us       12529us       21643us  128.6  11139.1us    422.4us                2.2us      4940.8      128.6         0.0%  96.822
+
+
+
+######################
+# Running Job 2 of 2 #
+######################
+
+Disk Index Load
+         Data Type: int8
+         Load Path: /Users/18abhinav07/Documents/exa/data/dann/disk10m_R64_L100_pq48
+
+Disk Index Search Phase
+           Queries: /Users/18abhinav07/Documents/exa/data/dann/query10k.i8bin
+       Groundtruth: /Users/18abhinav07/Documents/exa/data/dann/gt10m-10k.bin
+        Search List:60,80,120
+        Beam Width: 1
+           Recall@: 10
+           Threads: 48
+       Search Mode: graph
+          Distance: squared_l2
+Vector Filters File: none
+Num Nodes to Cache: none (defaults to 0)
+   Search IO Limit: none (defaults to `usize::MAX`)
+    Post Processor: none
+
+Search Stats
+Threads,          : 48
+Beam width,       : 1
+Recall at,        : 10
+Flat search,      : false
+Distance,         : squared_l2
+Vector filters,   : false
+Nodes to cache,   : None
+=======================================================================================================================================================
+ L KNN      QPS  Mean Latency   95% Latency  99.9 Latency    IOs    IO (us)   CPU (us)   PQ Preprocess (us)  Mean Comps  Mean Hops  Cache Hit %  Recall
+=======================================================================================================================================================
+60  10   3355.4     14275.2us       16438us       39023us   69.3  13767.4us    504.5us                3.3us      2900.9       69.3         0.0%  94.350
+80  10   2628.7     18211.9us       20383us       43604us   89.0  17583.3us    625.5us                3.1us      3590.9       89.0         0.0%  95.435
+120  10   1821.1     26316.5us       28303us       49012us  128.6  25430.0us    883.6us                2.9us      4940.8      128.6         0.0%  96.822
+
+       33.90 real        22.65 user        95.16 sys
+           522665984  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               32124  page reclaims
+                 115  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+             5739745  voluntary context switches
+             2709033  involuntary context switches
+        515533814594  instructions retired
+        445135658193  cycles elapsed
+           519799576  peak memory footprint
