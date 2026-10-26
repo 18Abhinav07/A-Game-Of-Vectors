@@ -429,6 +429,53 @@ NeurIPS'21: 1B × 100-d int8 Bing web-document vectors, L2, 29,316 queries, grou
   top-4 coarse assignment does nothing to cap it. Balanced k-means or splitting oversized
   leaves would cut the scan tail.
 
+### D20. SPACEV-1B at the device limit: page reads, a pinned hot set, 2-bit refinement
+D19 left 1B at R@10 0.911 and 147 QPS, with the exact rerank the bottleneck. The published
+reference point is the NeurIPS'21 big-ann T2 (SSD) track (Simhadri et al., PMLR 176, 2022):
+DiskANN reaches R@10 0.901 at the 1,500 QPS bar on msspacev-1B, on an 8-vCPU Azure L8s_v2
+with **64 GB of RAM** and a 1 TB NVMe. This laptop has 24 GB. Three measured changes, each
+attacking whatever the device was spending its time on:
+- **Device ceilings first** (`examples/iobench.rs`, on the uncached postings file). Sequential
+  256 KiB reads: 3.6 GB/s. Random 4 KiB aligned reads: 223k/s at 64 threads, 241k at 128. But
+  random reads of 100 B or 512 B with the page cache bypassed top out at **138k/s**: a sub-page
+  read costs the device a page and completes slower. D19's rerank read 100-byte rows.
+- **Rerank reads whole aligned pages.** `Base::rows` now reads the 4 KiB page (two for the 2.4%
+  of rows that straddle a boundary) into a page-aligned buffer. Isolated, the cold rerank path
+  goes to 221k rows/s (`examples/rerank_io.rs`).
+- **A pinned hot set instead of the page cache.** Probe traffic is skewed: the hottest leaves
+  by hits per byte cover 22% of probed bytes at 2 GiB, 59% at 8 GiB, 75% at 12 GiB, 87% at
+  16 GiB (`examples/spacev_diag.rs`). The OS cache could not exploit that, because 100 GB of
+  rerank reads flush it (D19: warm ≈ cold). `Postings::pin` reads a static set once;
+  `spacev search --hot-gb` chooses it greedily by hits per byte at the run's nprobe, **learned
+  from the held-out queries 10,000–29,315**, never from the 10,000 evaluated. Everything else
+  is read with F_NOCACHE. With 12 GiB pinned, 1-bit 64:500 goes from 130 to 266 QPS cold
+  (posting traffic 14.8 → 3.7 MB/query), and the rerank is again the bottleneck.
+- **2-bit refinement to shrink the rerank.** Re-ranking real 1B candidates offline
+  (`examples/spacev_refine.rs`, 1,000 held-out queries, nprobe 64) shows the 1-bit estimate's
+  error (rms 1,899) is what forces 500–1,000 reads. A uniform B-bit code of the residual, with
+  a per-row step that maximises cos(r, r̂) (the extended-RaBitQ idea, Gao et al. SIGMOD 2025),
+  gives R@10 at 50 / 100 / 500 candidates of 0.771 / 0.841 / 0.917 (1-bit), 0.889 / 0.917 /
+  0.932 (2-bit, rms 869), 0.928 / 0.931 / 0.932 (3-bit, rms 478). The top plane of that code is
+  the sign, which is the 1-bit code already in the block, so a `bits`-bit index stores only the
+  low planes and one scale f per slot (`refine_encode`; 2-bit: +20 B, 48 B per slot). The scan
+  is unchanged; each slot that enters the 1-bit shortlist (`refine`, 1,000) is re-estimated
+  from all planes with 16 table lookups per plane (`Refiner`: per-query sums of q over each
+  byte value), and only the best `cand` are reranked. Config syntax: `nprobe:cand:refine`.
+- **2-bit, not 3.** Bigger slots cost posting bandwidth and hot-set coverage. At 100M with a
+  1.2 GiB hot set (the 1B budget scaled), at matched recall: 1-bit 64:1000 R@10 0.910 at 136
+  QPS; 2-bit 64:100:1000 0.914 at 268 QPS; 3-bit 64:50:1000 0.917 at 194 QPS.
+- **Result at 1B**, 2-bit, 12 GiB pinned, everything else cold, 10,000 queries: 40:100:1000
+  R@10 0.906 at 372 QPS (p50 3.5 ms, p99 7.2 ms); 48:100:1000 0.914 at 345 QPS; 64:100:1000
+  0.925 at 275 QPS; 128:200:2000 0.951 at 137 QPS (D19: 0.942 at 69 warm). Rebuild: ten adds
+  at 83–88 s (1.15M rows/s, the step search adds 35%), pack 101 s, 48.3 GB of postings.
+- **Where it stops.** At 48:100 the SSD streams 8.9 MB × 345 = 3.1 GB/s of postings, against a
+  3.6 GB/s sequential ceiling, plus 35k page reads/s: the device, not the CPU (12 cores, about
+  2.5 ms of CPU per query), is the limit. DiskANN's 1,500 QPS at 0.90 comes with 64 GB of RAM
+  for its PQ codes and graph cache; at 12 GiB of RAM this design gets about a quarter of that
+  throughput. The next gains are fewer bytes per probe (f16 factors save 4 of 48 B; ids implied
+  by a base reordered into posting order save 4 more) or more RAM for the hot set, which pays
+  back at 75%→87% coverage between 12 and 16 GiB.
+
 ## Milestones
 - M1: 10 shards (17.6M vectors) end to end; recall and nDCG against exact flat search.
 - M2: all 60 shards (113.5M); QPS, p50/p99, roofline, flamegraphs.
