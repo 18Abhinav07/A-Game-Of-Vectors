@@ -121,13 +121,17 @@ pub fn train(base: &[i8], out: &Path, k1: usize, k2: usize, sample_n: usize, ite
     std::fs::create_dir_all(out)?;
     let n = base.len() / D;
     let mut rng = Rng::new(42);
+    // Sorted, so the reads sweep the file once with readahead: random order made each row a
+    // serial page fault, and sampling 20M rows took minutes at 10% CPU.
+    let mut idx: Vec<usize> = (0..sample_n).map(|_| rng.below(n)).collect();
+    idx.sort_unstable();
     let mut sample = vec![0f32; sample_n * D];
-    for row in sample.chunks_exact_mut(D) {
-        let i = rng.below(n);
-        row.iter_mut().zip(&base[i * D..][..D]).for_each(|(o, &x)| *o = x as f32);
-    }
+    sample.par_chunks_mut(D).zip(&idx).for_each(|(row, &i)| row.iter_mut().zip(&base[i * D..][..D]).for_each(|(o, &x)| *o = x as f32));
+    // The coarse rows are an even stride through the sorted sample, so they span the file.
     let coarse_n = sample_n.min(k1 * 512);
-    let coarse = kmeans_l2(&sample[..coarse_n * D], k1, iters, 7);
+    let stride = sample_n / coarse_n;
+    let coarse_rows: Vec<f32> = sample.chunks_exact(D).step_by(stride).take(coarse_n).flatten().copied().collect();
+    let coarse = kmeans_l2(&coarse_rows, k1, iters, 7);
     eprintln!("coarse: {k1} cells on {coarse_n} rows in {:.0} s", t0.elapsed().as_secs_f64());
     let a = top_l2(&sample, &coarse, &norms(&coarse), 1);
     let mut members: Vec<Vec<u32>> = vec![Vec::new(); k1];
