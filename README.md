@@ -13,8 +13,7 @@ same laptop builds an index in about 22 minutes and serves R@10 0.906 at 420 QPS
 or 0.960 at 127 QPS with 12 GiB of RAM and everything else read cold from SSD, or R@10 0.911 at
 7.3 ms in 298 MB of RAM.
 
-Exa's post describes the design but publishes no code and no recall or latency numbers. The
-implementation, tuning and every number here are this repo's own: it measures the design
+The implementation, tuning and every number here are this repo's own: it measures the design
 against exact search and NIST relevance labels, finds where it loses recall, and fixes that.
 
 ## What's in it
